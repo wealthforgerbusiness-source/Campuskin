@@ -1,0 +1,23 @@
+{
+  "name": "CampusKin",
+  "short_name": "CampusKin",
+  "description": "L'Université dans votre poche : gestion des résumés de cours, annonces de promotion et finances.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0F172A",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
