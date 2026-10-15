@@ -5,6 +5,7 @@ import './globals.css';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import AppGate from '../components/AppGate';
 
 const NAV = [
   {
@@ -122,7 +123,7 @@ function OfflineBanner() {
     <div
       role="status"
       aria-live="polite"
-      className={`fixed inset-x-0 top-0 z-[60] overflow-hidden bg-[#2563EB] text-center text-[11px] font-medium uppercase tracking-widest text-white transition-all duration-300 ${
+      className={`fixed inset-x-0 top-0 z-[120] overflow-hidden bg-[#2563EB] text-center text-[11px] font-medium uppercase tracking-widest text-white transition-all duration-300 ${
         offline ? 'max-h-10 py-2 opacity-100' : 'max-h-0 py-0 opacity-0'
       }`}
     >
@@ -182,8 +183,7 @@ export default function RootLayout({ children }) {
         }}
       >
         <OfflineBanner />
-        {children}
-        <BottomNav />
+        <AppGate nav={<BottomNav />}>{children}</AppGate>
       </body>
     </html>
   );
