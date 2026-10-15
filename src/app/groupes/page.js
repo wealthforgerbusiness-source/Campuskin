@@ -1,473 +1,592 @@
+// src/app/groupes/page.js
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { supabase } from '../../lib/supabase';
 
-/**
- * Fonction d'assainissement et d'échappement des entrées textuelles (Anti-XSS)
- */
-const sanitizeText = (str) => {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-};
+const TABS = [
+  { id: 'annonces', label: 'Annonces' },
+  { id: 'sondages', label: 'Sondages' },
+  { id: 'tp', label: 'TP' },
+  { id: 'questions', label: 'Questions' },
+];
 
-const STORAGE_VOTES_KEY = 'campuskin_user_votes_v1';
-const STORAGE_QUESTIONS_KEY = 'campuskin_delegue_questions_v1';
-const MAX_QUESTION_CHARS = 500;
+const dateFr = (d) =>
+  d
+    ? new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '';
 
-export default function CampusKinGroupesPage() {
-  // États de données initiales sécurisés
-  const [announcements, setAnnouncements] = useState([
-    {
-      id: 1,
-      title: 'Planning des examens de session de rattrapage',
-      category: 'Officiel Administration',
-      content: 'Le calendrier officiel des examens de rattrapage est disponible. Veuillez consulter le secrétariat pour les détails par département.',
-      date: 'Il y a 2 heures',
-      urgent: true
-    },
-    {
-      id: 2,
-      title: 'Séminaire Pratique : Développement Cloud & DevOps',
-      category: 'Conférence Promotion',
-      content: 'Un atelier pratique sur le déploiement de conteneurs Docker et l\'utilisation de Render se tiendra ce samedi à l\'amphithéâtre principal.',
-      date: 'Hier',
-      urgent: false
-    }
-  ]);
+function timeLeft(d, now) {
+  const ms = new Date(d).getTime() - now;
+  const abs = Math.abs(ms);
+  const j = Math.floor(abs / 86400000);
+  const h = Math.floor((abs % 86400000) / 3600000);
+  const m = Math.floor((abs % 3600000) / 60000);
+  const txt = j > 0 ? `${j} j ${h} h` : h > 0 ? `${h} h ${m} min` : `${m} min`;
+  return { late: ms < 0, txt, soon: ms >= 0 && ms < 2 * 86400000 };
+}
 
-  const [polls, setPolls] = useState([
-    {
-      id: 101,
-      question: 'Quel jour préférez-vous pour la remise du TP d\'Architecture Web ?',
-      options: [
-        { id: 1, text: 'Vendredi à 23h59', votes: 42 },
-        { id: 2, text: 'Samedi à 18h00', votes: 18 },
-        { id: 3, text: 'Dimanche à 23h59', votes: 31 }
-      ],
-      totalVotes: 91
-    }
-  ]);
+export default function GroupesPage() {
+  const [me, setMe] = useState(null);
+  const [tab, setTab] = useState('annonces');
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [dbError, setDbError] = useState('');
+  const [now, setNow] = useState(() => Date.now());
 
-  const [deadlines, setDeadlines] = useState([
-    {
-      id: 201,
-      title: 'TP d\'Architecture Web (Node.js & API Sécurisées)',
-      dueDate: '2026-06-25T23:59:00Z',
-      course: 'Génie Logiciel L3',
-      status: 'En cours'
-    },
-    {
-      id: 202,
-      title: 'Projet de Sécurité des Réseaux',
-      dueDate: '2026-06-30T18:00:00Z',
-      course: 'Cybersécurité',
-      status: 'À venir'
-    }
-  ]);
+  const [annonces, setAnnonces] = useState([]);
+  const [sondages, setSondages] = useState([]);
+  const [myVotes, setMyVotes] = useState({}); // { sondage_id: option_index }
+  const [results, setResults] = useState({}); // { sondage_id: [counts] }
+  const [tps, setTps] = useState([]);
+  const [questions, setQuestions] = useState([]);
 
-  // États pour les votes et questions posées au délégué
-  const [userVotes, setUserVotes] = useState({});
-  const [delegateQuestion, setDelegateQuestion] = useState('');
-  const [userQuestions, setUserQuestions] = useState([]);
-  
-  // États de l'interface (Fail-safe UI)
-  const [error, setError] = useState(null);
-  const [successMsg, setSuccessMsg] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  /* Formulaires */
+  const [question, setQuestion] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [spQ, setSpQ] = useState('');
+  const [spOpts, setSpOpts] = useState('');
+  const [tpMat, setTpMat] = useState('');
+  const [tpTitre, setTpTitre] = useState('');
+  const [tpDate, setTpDate] = useState('');
 
-  // Chargement initial sécurisé des votes et questions depuis localStorage
+  const isStaff = me && ['delegue', 'admin'].includes(me.role);
+
+  const notify = (text, type = 'ok') => {
+    setToast({ text, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  /* Horloge pour les comptes à rebours */
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const savedVotes = localStorage.getItem(STORAGE_VOTES_KEY);
-        if (savedVotes) {
-          const parsedVotes = JSON.parse(savedVotes);
-          if (parsedVotes && typeof parsedVotes === 'object') {
-            setUserVotes(parsedVotes);
-          }
-        }
-
-        const savedQuestions = localStorage.getItem(STORAGE_QUESTIONS_KEY);
-        if (savedQuestions) {
-          const parsedQ = JSON.parse(savedQuestions);
-          if (Array.isArray(parsedQ)) {
-            setUserQuestions(parsedQ.filter(q => q && typeof q.text === 'string'));
-          }
-        }
-      } catch (err) {
-        setError("Erreur lors de la récupération des données locales.");
-      }
-    }
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
   }, []);
 
-  // Validation rigoureuse du format de date pour les deadlines
-  const formatDeadlineDate = (dateString) => {
-    try {
-      const dateObj = new Date(dateString);
-      if (isNaN(dateObj.getTime())) {
-        return 'Date non spécifiée';
+  /* Profil */
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return setLoading(false);
+      const { data: u } = await supabase.auth.getUser();
+      const user = u?.user;
+      if (!user) return setLoading(false);
+      const { data: prof } = await supabase.from('profiles').select('id, nom, role').eq('id', user.id).single();
+      setMe(prof || { id: user.id, nom: user.user_metadata?.nom || 'Étudiant', role: 'etudiant' });
+    })();
+  }, []);
+
+  /* Résultats des sondages */
+  const loadResults = useCallback(async (list) => {
+    const { data, error } = await supabase.rpc('resultats_sondages');
+    if (error) return;
+    const map = {};
+    (list || []).forEach((s) => (map[s.id] = Array(s.options.length).fill(0)));
+    (data || []).forEach((r) => {
+      if (map[r.sondage_id] && r.option_index < map[r.sondage_id].length) {
+        map[r.sondage_id][r.option_index] = Number(r.total);
       }
-      return new Intl.DateTimeFormat('fr-FR', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      }).format(dateObj);
-    } catch (e) {
-      return 'Format de date invalide';
-    }
-  };
+    });
+    setResults(map);
+  }, []);
 
-  // Gestionnaire de vote sécurisé (Anti-votes multiples)
-  const handleVote = (pollId, optionId) => {
-    setError(null);
-    setSuccessMsg(null);
+  /* Chargement général */
+  const load = useCallback(async () => {
+    if (!supabase || !me) return;
+    setDbError('');
+    const [a, s, v, t, q] = await Promise.all([
+      supabase.from('annonces').select('*').order('created_at', { ascending: false }),
+      supabase.from('sondages').select('*').order('created_at', { ascending: false }),
+      supabase.from('votes').select('sondage_id, option_index').eq('user_id', me.id),
+      supabase.from('tp_deadlines').select('*').order('date_limite', { ascending: true }),
+      supabase.from('questions').select('*').order('created_at', { ascending: false }),
+    ]);
+    const err = [a, s, v, t, q].find((r) => r.error);
+    if (err) setDbError(`Erreur Supabase : ${err.error.message}. As-tu exécuté tout le SQL ?`);
 
-    if (typeof pollId !== 'number' || typeof optionId !== 'number') {
-      setError('Paramètres de vote invalides.');
+    const polls = s.data || [];
+    setAnnonces(a.data || []);
+    setSondages(polls);
+    const mv = {};
+    (v.data || []).forEach((x) => (mv[x.sondage_id] = x.option_index));
+    setMyVotes(mv);
+    setTps(t.data || []);
+    setQuestions(q.data || []);
+    await loadResults(polls);
+    setLoading(false);
+  }, [me, loadResults]);
+
+  useEffect(() => {
+    if (me) load();
+  }, [me, load]);
+
+  /* Actualisation des sondages toutes les 10 s (quasi temps réel) */
+  useEffect(() => {
+    if (!me || tab !== 'sondages') return;
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') loadResults(sondages);
+    }, 10000);
+    return () => clearInterval(t);
+  }, [me, tab, sondages, loadResults]);
+
+  /* ---------- Sondages ---------- */
+  const voter = async (s, idx) => {
+    if (myVotes[s.id] !== undefined || !s.actif) return;
+    const { error } = await supabase
+      .from('votes')
+      .insert({ sondage_id: s.id, user_id: me.id, option_index: idx });
+    if (error) {
+      if (error.code === '23505') {
+        notify('Tu as déjà voté pour ce sondage.', 'err');
+        load();
+      } else notify(error.message, 'err');
       return;
     }
-
-    // Vérifier si l'utilisateur a déjà voté pour ce sondage
-    if (userVotes[pollId]) {
-      setError('Vous avez déjà exprimé votre vote pour ce sondage.');
-      return;
-    }
-
-    try {
-      const updatedPolls = polls.map((poll) => {
-        if (poll.id === pollId) {
-          const updatedOptions = poll.options.map((opt) =>
-            opt.id === optionId ? { ...opt, votes: opt.votes + 1 } : opt
-          );
-          return {
-            ...poll,
-            options: updatedOptions,
-            totalVotes: poll.totalVotes + 1
-          };
-        }
-        return poll;
-      });
-
-      const updatedVotesState = { ...userVotes, [pollId]: optionId };
-      setUserVotes(updatedVotesState);
-      setPolls(updatedPolls);
-
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(STORAGE_VOTES_KEY, JSON.stringify(updatedVotesState));
-      }
-
-      setSuccessMsg('Votre vote a été enregistré avec succès !');
-    } catch (err) {
-      setError("Impossible d'enregistrer le vote pour le moment.");
-    }
+    setMyVotes((p) => ({ ...p, [s.id]: idx }));
+    await loadResults(sondages);
+    notify('Vote enregistré.');
   };
 
-  // Soumission d'une question au délégué avec limites de caractères et anti-spam
-  const handleSubmitQuestion = (e) => {
+  const creerSondage = async (e) => {
     e.preventDefault();
-    setError(null);
-    setSuccessMsg(null);
-
-    if (typeof delegateQuestion !== 'string') {
-      setError('Format de question invalide.');
-      return;
-    }
-
-    const trimmedQ = delegateQuestion.trim();
-
-    if (!trimmedQ) {
-      setError('Veuillez saisir votre question avant de l\'envoyer.');
-      return;
-    }
-
-    if (trimmedQ.length > MAX_QUESTION_CHARS) {
-      setError(`La question dépasse la limite autorisée de ${MAX_QUESTION_CHARS} caractères.`);
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      const sanitizedQ = sanitizeText(trimmedQ);
-      const newEntry = {
-        id: Date.now(),
-        text: sanitizedQ,
-        date: 'À l\'instant',
-        status: 'Transmis au délégué'
-      };
-
-      const updatedList = [newEntry, ...userQuestions];
-      setUserQuestions(updatedList);
-      setDelegateQuestion('');
-      setSuccessMsg('Votre question a été transmise au délégué de promotion.');
-
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(STORAGE_QUESTIONS_KEY, JSON.stringify(updatedList));
-      }
-    } catch (err) {
-      setError("Une erreur est survenue lors de l'envoi de la question.");
-    } finally {
-      setIsLoading(false);
-    }
+    const opts = spOpts
+      .split('\n')
+      .map((o) => o.trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    if (spQ.trim().length < 5) return notify('Question trop courte.', 'err');
+    if (opts.length < 2) return notify('Mets au moins 2 options (une par ligne).', 'err');
+    setBusy(true);
+    const { error } = await supabase
+      .from('sondages')
+      .insert({ question: spQ.trim(), options: opts, auteur: me.id });
+    setBusy(false);
+    if (error) return notify(error.message, 'err');
+    setSpQ('');
+    setSpOpts('');
+    notify('Sondage publié.');
+    load();
   };
+
+  const fermerSondage = async (id) => {
+    const { error } = await supabase.from('sondages').update({ actif: false }).eq('id', id);
+    if (error) return notify(error.message, 'err');
+    notify('Sondage clôturé.');
+    load();
+  };
+
+  const supprimerSondage = async (id) => {
+    if (!window.confirm('Supprimer ce sondage et tous ses votes ?')) return;
+    const { error } = await supabase.from('sondages').delete().eq('id', id);
+    if (error) return notify(error.message, 'err');
+    load();
+  };
+
+  /* ---------- TP ---------- */
+  const ajouterTp = async (e) => {
+    e.preventDefault();
+    if (!tpMat.trim() || !tpTitre.trim() || !tpDate) return notify('Remplis tous les champs.', 'err');
+    setBusy(true);
+    const { error } = await supabase.from('tp_deadlines').insert({
+      matiere: tpMat.trim(),
+      titre: tpTitre.trim(),
+      date_limite: new Date(tpDate).toISOString(),
+      auteur: me.id,
+    });
+    setBusy(false);
+    if (error) return notify(error.message, 'err');
+    setTpMat('');
+    setTpTitre('');
+    setTpDate('');
+    notify('Date limite ajoutée.');
+    load();
+  };
+
+  const supprimerTp = async (id) => {
+    const { error } = await supabase.from('tp_deadlines').delete().eq('id', id);
+    if (error) return notify(error.message, 'err');
+    load();
+  };
+
+  /* ---------- Questions ---------- */
+  const poserQuestion = async (e) => {
+    e.preventDefault();
+    const txt = question.trim();
+    if (txt.length < 5) return notify('Ta question est trop courte.', 'err');
+    setBusy(true);
+    const { error } = await supabase
+      .from('questions')
+      .insert({ auteur: me.id, auteur_nom: me.nom || 'Étudiant', texte: txt });
+    setBusy(false);
+    if (error) return notify(error.message, 'err');
+    setQuestion('');
+    notify('Question envoyée au délégué.');
+    load();
+  };
+
+  /* Badges */
+  const sondagesAVoter = sondages.filter((s) => s.actif && myVotes[s.id] === undefined).length;
+  const tpProches = useMemo(
+    () => tps.filter((t) => timeLeft(t.date_limite, now).soon).length,
+    [tps, now]
+  );
+
+  const Empty = ({ children }) => (
+    <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+      {children}
+    </p>
+  );
 
   return (
-    <div className="min-h-screen bg-white text-[#0F172A] font-sans antialiased selection:bg-[#2563EB] selection:text-white">
-      
-      {/* Barre de navigation supérieure */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center text-white font-bold text-xl shadow-md shadow-blue-500/20">
-              CK
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-[#0F172A]">CampusKin</h1>
-              <span className="text-xs text-slate-500 font-medium">Espace Groupes & Promotion</span>
-            </div>
+    <main className="min-h-screen bg-slate-50 pb-36">
+      <style>{`
+        @keyframes gUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes gToast{from{opacity:0;transform:translate(-50%,-12px)}to{opacity:1;transform:translate(-50%,0)}}
+        @keyframes gGrow{from{width:0}}
+        .g-in{animation:gUp .5s cubic-bezier(.2,.7,.2,1) both}
+        .g-bar{animation:gGrow .8s cubic-bezier(.2,.7,.2,1) both}
+      `}</style>
+
+      {/* En-tête */}
+      <header className="relative overflow-hidden bg-[#0F172A] px-5 pb-16 pt-[max(env(safe-area-inset-top),2rem)] text-white">
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#2563EB]/40 blur-[90px]" />
+        <div className="relative mx-auto max-w-3xl">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] uppercase tracking-[0.35em] text-white/60">Ma promotion</p>
+            {isStaff && (
+              <span className="rounded-full bg-[#2563EB] px-3 py-1 text-[10px] font-semibold uppercase tracking-widest">
+                {me.role}
+              </span>
+            )}
           </div>
-          <div className="flex items-center space-x-3">
-            <span className="hidden sm:inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-[#2563EB]">
-              Promotion L3 GL
-            </span>
-            <a
-              href="/"
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#0F172A] text-xs font-semibold rounded-xl transition-all"
-            >
-              Tableau de bord
-            </a>
-          </div>
+          <h1 className="mt-3 text-3xl font-light uppercase tracking-tight sm:text-4xl">
+            Tes <span className="font-semibold text-[#60a5fa]">groupes.</span>
+          </h1>
+          <p className="mt-3 text-xs uppercase tracking-wide text-white/60">
+            Annonces, sondages, TP et questions
+          </p>
         </div>
       </header>
 
-      {/* Contenu Principal */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <div className="relative z-10 mx-auto -mt-8 max-w-3xl px-4 sm:px-5">
+        {/* Onglets */}
+        <div className="no-scrollbar flex gap-1 overflow-x-auto rounded-2xl bg-white p-1.5 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
+          {TABS.map((t) => {
+            const badge = t.id === 'sondages' ? sondagesAVoter : t.id === 'tp' ? tpProches : 0;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`relative flex-1 shrink-0 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-widest transition active:scale-95 ${
+                  tab === t.id ? 'bg-[#0F172A] text-white' : 'text-slate-500 hover:text-[#0F172A]'
+                }`}
+              >
+                {t.label}
+                {badge > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#2563EB] px-1 text-[9px] text-white">
+                    {badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-        {/* Notifications d'état (Fail-safe UI) */}
-        {error && (
-          <div className="p-4 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-2xl font-medium animate-fadeIn shadow-sm">
-            ⚠️ {error}
+        {dbError && (
+          <div role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {dbError}
           </div>
         )}
 
-        {successMsg && (
-          <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-2xl font-medium animate-fadeIn shadow-sm">
-            ✨ {successMsg}
+        {loading ? (
+          <div className="mt-5 space-y-3">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-24 animate-pulse rounded-2xl bg-slate-200" />
+            ))}
           </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Colonne Principale : Annonces Officielles & Sondages (2 Colonnes sur Large) */}
-          <div className="lg:col-span-2 space-y-8">
-            
-            {/* Section Alertes & Annonces Officielles */}
-            <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-[#0F172A]">Annonces & Alertes Officielles</h2>
-                <span className="text-xs text-slate-500 font-medium bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
-                  {announcements.length} annonce{announcements.length > 1 ? 's' : ''}
-                </span>
-              </div>
-
-              <div className="space-y-4">
-                {announcements.map((item) => (
-                  <div
-                    key={item.id}
-                    className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50 hover:border-blue-200 transition-all duration-200 relative overflow-hidden group"
-                  >
-                    <div className="absolute top-0 left-0 w-1.5 h-full bg-[#2563EB]"></div>
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <span className="inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-[#2563EB] mb-2">
-                          {item.category}
-                        </span>
-                        <h3 className="text-base font-bold text-[#0F172A] group-hover:text-[#2563EB] transition-colors">
-                          {item.title}
-                        </h3>
-                      </div>
-                      {item.urgent && (
-                        <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-500 text-white animate-pulse">
-                          Important
-                        </span>
-                      )}
+        ) : (
+          <div key={tab} className="g-in mt-5 space-y-4">
+            {/* ===== ANNONCES ===== */}
+            {tab === 'annonces' && (
+              <>
+                {annonces.length === 0 && <Empty>Aucune annonce pour le moment.</Empty>}
+                {annonces.map((a) => (
+                  <div key={a.id} className="ck-card !p-4 border-l-4 !border-l-[#2563EB]">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-semibold leading-snug">{a.titre}</h3>
+                      {a.urgent && <span className="ck-badge">Urgent</span>}
                     </div>
-                    <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-                      {item.content}
+                    {a.contenu && <p className="mt-1.5 whitespace-pre-line text-sm text-slate-600">{a.contenu}</p>}
+                    <p className="mt-2 text-[11px] uppercase tracking-wider text-slate-400">
+                      Officiel · {dateFr(a.created_at)}
                     </p>
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
-                      <span>Publié par le secrétariat académique</span>
-                      <span>{item.date}</span>
-                    </div>
                   </div>
                 ))}
-              </div>
-            </section>
+                {isStaff && (
+                  <p className="text-center text-xs text-slate-400">
+                    Pour publier une annonce, va dans l'onglet <b>Admin</b>.
+                  </p>
+                )}
+              </>
+            )}
 
-            {/* Section Sondages Interactifs */}
-            <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-[#0F172A]">Sondages de la Promotion</h2>
-                <span className="text-xs text-slate-500 font-medium">Votes en temps réel</span>
-              </div>
+            {/* ===== SONDAGES ===== */}
+            {tab === 'sondages' && (
+              <>
+                {sondages.length === 0 && <Empty>Aucun sondage pour le moment.</Empty>}
+                {sondages.map((s) => {
+                  const mine = myVotes[s.id];
+                  const voted = mine !== undefined;
+                  const counts = results[s.id] || Array(s.options.length).fill(0);
+                  const total = counts.reduce((x, y) => x + y, 0);
+                  const showResults = voted || !s.actif || isStaff;
 
-              <div className="space-y-4">
-                {polls.map((poll) => {
-                  const hasVoted = userVotes[poll.id] !== undefined;
                   return (
-                    <div
-                      key={poll.id}
-                      className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50"
-                    >
-                      <h3 className="text-base font-bold text-[#0F172A] mb-4">{poll.question}</h3>
-                      
-                      <div className="space-y-3">
-                        {poll.options.map((option) => {
-                          const percentage = poll.totalVotes > 0 ? Math.round((option.votes / poll.totalVotes) * 100) : 0;
-                          const isSelected = userVotes[poll.id] === option.id;
+                    <div key={s.id} className="ck-card">
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="font-semibold leading-snug">{s.question}</h3>
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                            s.actif ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {s.actif ? 'Ouvert' : 'Clos'}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 space-y-2.5">
+                        {s.options.map((opt, i) => {
+                          const pct = total ? Math.round((counts[i] / total) * 100) : 0;
+                          const isMine = mine === i;
+                          const canVote = s.actif && !voted;
 
                           return (
-                            <div key={option.id} className="space-y-1">
-                              <button
-                                onClick={() => handleVote(poll.id, option.id)}
-                                disabled={hasVoted}
-                                className={`w-full text-left p-3.5 rounded-xl border transition-all flex items-center justify-between group ${
-                                  isSelected
-                                    ? 'border-[#2563EB] bg-blue-50/50 shadow-sm'
-                                    : 'border-slate-200 hover:border-[#2563EB] bg-slate-50/50'
-                                } ${hasVoted ? 'cursor-default' : 'cursor-pointer'}`}
-                              >
-                                <span className="text-sm font-semibold text-[#0F172A] flex items-center space-x-2">
-                                  <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${isSelected ? 'border-[#2563EB] bg-[#2563EB]' : 'border-slate-300'}`}>
-                                    {isSelected && <span className="w-1.5 h-1.5 bg-white rounded-full"></span>}
+                            <button
+                              key={i}
+                              disabled={!canVote}
+                              onClick={() => voter(s, i)}
+                              className={`relative w-full overflow-hidden rounded-xl border px-4 py-3 text-left text-sm transition ${
+                                canVote
+                                  ? 'border-slate-200 hover:border-[#2563EB] active:scale-[.98]'
+                                  : isMine
+                                  ? 'border-[#2563EB]'
+                                  : 'border-slate-200'
+                              }`}
+                            >
+                              {showResults && (
+                                <span
+                                  className={`g-bar absolute inset-y-0 left-0 ${
+                                    isMine ? 'bg-[#2563EB]/20' : 'bg-slate-100'
+                                  }`}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              )}
+                              <span className="relative flex items-center justify-between gap-3">
+                                <span className={`font-medium ${isMine ? 'text-[#2563EB]' : ''}`}>
+                                  {isMine && '✓ '}
+                                  {opt}
+                                </span>
+                                {showResults && (
+                                  <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-500">
+                                    {pct}% · {counts[i]}
                                   </span>
-                                  <span>{option.text}</span>
-                                </span>
-                                <span className="text-xs font-bold text-[#2563EB]">
-                                  {percentage}% ({option.votes} votes)
-                                </span>
-                              </button>
-                              
-                              {/* Barre de progression visuelle */}
-                              <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                                <div
-                                  className="bg-[#2563EB] h-full transition-all duration-500 rounded-full"
-                                  style={{ width: `${percentage}%` }}
-                                ></div>
-                              </div>
-                            </div>
+                                )}
+                              </span>
+                            </button>
                           );
                         })}
                       </div>
 
-                      {hasVoted && (
-                        <p className="mt-4 text-xs font-medium text-emerald-600 flex items-center space-x-1">
-                          <span>✓ Votre vote a été pris en compte.</span>
-                        </p>
-                      )}
+                      <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
+                        <span>
+                          {total} vote{total > 1 ? 's' : ''}
+                          {!showResults && ' · résultats visibles après ton vote'}
+                          {voted && s.actif && ' · vote définitif'}
+                        </span>
+                        {isStaff && (
+                          <span className="flex gap-3">
+                            {s.actif && (
+                              <button onClick={() => fermerSondage(s.id)} className="font-semibold text-[#2563EB]">
+                                Clôturer
+                              </button>
+                            )}
+                            <button
+                              onClick={() => supprimerSondage(s.id)}
+                              className="font-semibold text-slate-400 hover:text-red-600"
+                            >
+                              Supprimer
+                            </button>
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
-              </div>
-            </section>
 
-          </div>
+                {isStaff && (
+                  <form onSubmit={creerSondage} className="ck-card-dark space-y-3">
+                    <h2 className="text-sm font-semibold uppercase tracking-widest text-white/70">
+                      Nouveau sondage
+                    </h2>
+                    <input
+                      value={spQ}
+                      onChange={(e) => setSpQ(e.target.value)}
+                      maxLength={150}
+                      placeholder="Question"
+                      className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 outline-none placeholder:text-white/40 focus:border-[#2563EB]"
+                    />
+                    <textarea
+                      value={spOpts}
+                      onChange={(e) => setSpOpts(e.target.value)}
+                      rows={4}
+                      placeholder={'Une option par ligne (2 à 5)\nOui\nNon'}
+                      className="w-full resize-none rounded-xl border border-white/15 bg-white/5 px-4 py-3 outline-none placeholder:text-white/40 focus:border-[#2563EB]"
+                    />
+                    <button disabled={busy} className="ck-btn w-full">
+                      {busy ? 'Publication…' : 'Publier le sondage'}
+                    </button>
+                  </form>
+                )}
+              </>
+            )}
 
-          {/* Colonne Latérale : Suivi Deadlines & Canal Délégué */}
-          <div className="space-y-8">
-            
-            {/* Suivi des Deadlines de TP */}
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-              <h2 className="text-lg font-bold text-[#0F172A] mb-1">Échéances & Deadlines TP</h2>
-              <p className="text-xs text-slate-500 mb-6">Suivi personnel des remises de travaux.</p>
-
-              <div className="space-y-4">
-                {deadlines.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-4 rounded-xl bg-slate-50 border border-slate-100 hover:border-blue-200 transition-all space-y-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#2563EB] bg-blue-50 px-2 py-0.5 rounded">
-                        {item.course}
-                      </span>
-                      <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
-                        {item.status}
-                      </span>
+            {/* ===== TP ===== */}
+            {tab === 'tp' && (
+              <>
+                {tps.length === 0 && <Empty>Aucune date limite enregistrée.</Empty>}
+                {tps.map((t) => {
+                  const tl = timeLeft(t.date_limite, now);
+                  return (
+                    <div
+                      key={t.id}
+                      className={`ck-card !p-4 flex items-center justify-between gap-3 ${tl.late ? 'opacity-60' : ''}`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-widest text-[#2563EB]">
+                          {t.matiere}
+                        </div>
+                        <h3 className="mt-0.5 font-semibold leading-snug">{t.titre}</h3>
+                        <p className="mt-1 text-xs text-slate-400">{dateFr(t.date_limite)}</p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <span
+                          className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${
+                            tl.late
+                              ? 'bg-slate-100 text-slate-500'
+                              : tl.soon
+                              ? 'bg-[#0F172A] text-white'
+                              : 'bg-[#2563EB]/10 text-[#2563EB]'
+                          }`}
+                        >
+                          {tl.late ? `Passé · ${tl.txt}` : tl.txt}
+                        </span>
+                        {isStaff && (
+                          <button
+                            onClick={() => supprimerTp(t.id)}
+                            className="text-[11px] font-semibold text-slate-400 hover:text-red-600"
+                          >
+                            Supprimer
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <h4 className="text-sm font-bold text-[#0F172A]">{item.title}</h4>
-                    <p className="text-xs text-slate-500 font-medium">
-                      📅 Limite : {formatDeadlineDate(item.dueDate)}
-                    </p>
+                  );
+                })}
+
+                {isStaff && (
+                  <form onSubmit={ajouterTp} className="ck-card space-y-3">
+                    <h2 className="ck-title">Nouvelle date limite</h2>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <input
+                        value={tpMat}
+                        onChange={(e) => setTpMat(e.target.value)}
+                        placeholder="Matière"
+                        maxLength={40}
+                        className="ck-input"
+                      />
+                      <input
+                        type="datetime-local"
+                        value={tpDate}
+                        onChange={(e) => setTpDate(e.target.value)}
+                        className="ck-input"
+                      />
+                    </div>
+                    <input
+                      value={tpTitre}
+                      onChange={(e) => setTpTitre(e.target.value)}
+                      placeholder="Intitulé du TP"
+                      maxLength={100}
+                      className="ck-input"
+                    />
+                    <button disabled={busy} className="ck-btn w-full">
+                      {busy ? 'Ajout…' : 'Ajouter'}
+                    </button>
+                  </form>
+                )}
+              </>
+            )}
+
+            {/* ===== QUESTIONS ===== */}
+            {tab === 'questions' && (
+              <>
+                <form onSubmit={poserQuestion} className="ck-card space-y-3">
+                  <h2 className="ck-title">Poser une question au délégué</h2>
+                  <textarea
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    maxLength={300}
+                    rows={3}
+                    placeholder="Ex : Le TP de réseau est-il à rendre en groupe ?"
+                    className="ck-input resize-none"
+                  />
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs tabular-nums text-slate-400">{question.length} / 300</span>
+                    <button disabled={busy} className="ck-btn">
+                      {busy ? 'Envoi…' : 'Envoyer'}
+                    </button>
+                  </div>
+                </form>
+
+                {questions.length === 0 && <Empty>Aucune question pour le moment. Sois le premier !</Empty>}
+                {questions.map((q) => (
+                  <div key={q.id} className="ck-card !p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-[#2563EB]">
+                        {q.auteur === me?.id ? 'Toi' : q.auteur_nom || 'Étudiant'}
+                      </span>
+                      <span className="text-[11px] text-slate-400">{dateFr(q.created_at)}</span>
+                    </div>
+                    <p className="mt-2 text-sm font-medium">{q.texte}</p>
+                    {q.reponse ? (
+                      <div className="mt-3 rounded-xl bg-[#2563EB]/5 p-3 text-sm text-slate-700">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-[#2563EB]">
+                          Réponse du délégué
+                        </div>
+                        {q.reponse}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-[11px] uppercase tracking-wider text-slate-400">
+                        En attente de réponse
+                      </p>
+                    )}
                   </div>
                 ))}
-              </div>
-            </div>
-
-            {/* Formulaire de question au délégué */}
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-              <h2 className="text-lg font-bold text-[#0F172A] mb-1">Poser une question au Délégué</h2>
-              <p className="text-xs text-slate-500 mb-4">Besoin d'éclaircissements sur un cours ou un TP ? Envoyez votre message.</p>
-
-              <form onSubmit={handleSubmitQuestion} className="space-y-4">
-                <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="block text-xs font-semibold text-slate-700">Votre message</label>
-                    <span className={`text-[11px] font-medium ${delegateQuestion.length > MAX_QUESTION_CHARS * 0.9 ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
-                      {delegateQuestion.length} / {MAX_QUESTION_CHARS}
-                    </span>
-                  </div>
-                  <textarea
-                    value={delegateQuestion}
-                    onChange={(e) => setDelegateQuestion(e.target.value)}
-                    placeholder="Posez votre question ici..."
-                    rows={4}
-                    maxLength={MAX_QUESTION_CHARS}
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] focus:bg-white transition-all text-[#0F172A] resize-none"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full py-3 px-4 bg-[#2563EB] hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-500/25 transition-all duration-200 disabled:opacity-50 flex items-center justify-center space-x-2 cursor-pointer"
-                >
-                  {isLoading ? <span>Envoi en cours...</span> : <span>Transmettre au délégué</span>}
-                </button>
-              </form>
-
-              {/* Historique des questions posées */}
-              {userQuestions.length > 0 && (
-                <div className="mt-6 pt-6 border-t border-slate-100 space-y-3">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Mes questions transmises</h3>
-                  <div className="space-y-2">
-                    {userQuestions.map((q) => (
-                      <div key={q.id} className="p-3 bg-slate-50 rounded-xl text-xs space-y-1">
-                        <p className="font-medium text-[#0F172A]">{q.text}</p>
-                        <div className="flex justify-between text-[10px] text-slate-400">
-                          <span>{q.status}</span>
-                          <span>{q.date}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-            </div>
-
+              </>
+            )}
           </div>
+        )}
+      </div>
 
+      {toast && (
+        <div
+          role="status"
+          style={{ animation: 'gToast .3s ease-out both' }}
+          className={`fixed left-1/2 top-5 z-[130] max-w-[90vw] -translate-x-1/2 rounded-xl px-5 py-3 text-sm font-medium text-white shadow-2xl ${
+            toast.type === 'err' ? 'bg-red-600' : 'bg-[#0F172A]'
+          }`}
+        >
+          {toast.text}
         </div>
-      </main>
-    </div>
+      )}
+    </main>
   );
 }
