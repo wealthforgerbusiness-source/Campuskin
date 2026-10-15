@@ -1,386 +1,333 @@
+// src/app/notes/page.js
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-/**
- * Fonction d'assainissement et d'échappement des entrées textuelles (Anti-XSS)
- * Neutralise les caractères spéciaux pour empêcher toute exécution de script malveillant.
- */
-const sanitizeText = (str) => {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-};
+const KEY = 'campuskin_notes'; // même clé que le dashboard : { matière: texte }
+const MAX = 2500;
+const SUGGESTIONS = ['Mathématiques', 'Informatique', 'Anglais', 'Droit', 'Économie', 'Physique'];
 
-const MAX_CHARS = 2500;
-const STORAGE_KEY = 'campuskin_student_notes_v1';
-
-export default function CampusKinNotesPage() {
-  // États sécurisés
-  const [notes, setNotes] = useState([]);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [editingId, setEditingId] = useState(null);
-  
-  // États de connectivité et de synchronisation (Offline-first)
-  const [isOnline, setIsOnline] = useState(true);
-  const [syncStatus, setSyncStatus] = useState('Synchronisé');
-  const [error, setError] = useState(null);
-  const [successMsg, setSuccessMsg] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-
-  // Initialisation au montage (Chargement sécurisé depuis le localStorage avec gestion d'erreurs)
-  useEffect(() => {
-    // Gestion du statut réseau en temps réel
-    if (typeof window !== 'undefined') {
-      setIsOnline(navigator.onLine);
-      const handleOnline = () => {
-        setIsOnline(true);
-        triggerSync();
-      };
-      const handleOffline = () => {
-        setIsOnline(false);
-        setSyncStatus('Mode hors-ligne (Enregistrement local)');
-      };
-
-      window.addEventListener('online', handleOnline);
-      window.addEventListener('offline', handleOffline);
-
-      try {
-        const savedNotes = localStorage.getItem(STORAGE_KEY);
-        if (savedNotes) {
-          const parsed = JSON.parse(savedNotes);
-          if (Array.isArray(parsed)) {
-            // Validation stricte du type de chaque élément chargé
-            const validNotes = parsed.filter(
-              (item) => item && typeof item.id === 'number' && typeof item.title === 'string' && typeof item.content === 'string'
-            );
-            setNotes(validNotes);
-          }
-        }
-      } catch (err) {
-        setError("Erreur lors de la récupération des notes stockées localement.");
-      }
-
-      return () => {
-        window.removeEventListener('online', handleOnline);
-        window.removeEventListener('offline', handleOffline);
-      };
+/* ---------- Stockage local ---------- */
+function readNotes() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) {
+      const obj = {};
+      data.forEach((n) => n?.matiere && (obj[n.matiere] = String(n.texte || '').slice(0, MAX)));
+      return obj;
     }
+    const obj = {};
+    Object.entries(data || {}).forEach(([k, v]) => (obj[k] = String(v || '').slice(0, MAX)));
+    return obj;
+  } catch {
+    return {};
+  }
+}
+
+/* ---------- Anneau du compteur ---------- */
+function Ring({ count }) {
+  const r = 16;
+  const c = 2 * Math.PI * r;
+  const ratio = Math.min(count / MAX, 1);
+  const danger = ratio >= 0.9;
+  return (
+    <svg viewBox="0 0 40 40" className="h-10 w-10 -rotate-90" aria-hidden>
+      <circle cx="20" cy="20" r={r} fill="none" className="stroke-slate-200" strokeWidth="3.5" />
+      <circle
+        cx="20"
+        cy="20"
+        r={r}
+        fill="none"
+        strokeWidth="3.5"
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={c * (1 - ratio)}
+        className={`transition-all duration-300 ${danger ? 'stroke-red-500' : 'stroke-[#2563EB]'}`}
+      />
+    </svg>
+  );
+}
+
+export default function NotesPage() {
+  const [notes, setNotes] = useState({});
+  const [active, setActive] = useState('');
+  const [ready, setReady] = useState(false);
+  const [status, setStatus] = useState('idle'); // idle | saving | saved | error
+  const [adding, setAdding] = useState(false);
+  const [newSub, setNewSub] = useState('');
+  const [toast, setToast] = useState('');
+  const lastEdited = useRef('');
+
+  /* Chargement */
+  useEffect(() => {
+    const data = readNotes();
+    setNotes(data);
+    const first = Object.keys(data)[0] || '';
+    setActive(first);
+    lastEdited.current = first;
+    setAdding(Object.keys(data).length === 0);
+    setReady(true);
   }, []);
 
-  // Fonction de sauvegarde locale sécurisée (Fail-safe & Offline-first)
-  const persistNotesLocally = (updatedNotes) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedNotes));
-      setSyncStatus(isOnline ? 'Synchronisé' : 'Modifications sauvegardées hors-ligne');
-    } catch (err) {
-      throw new Error("Échec de la persistance locale : espace de stockage saturé ou indisponible.");
-    }
-  };
-
-  // Simulation de synchronisation réseau lors du retour en ligne
-  const triggerSync = () => {
-    setSyncStatus('Synchronisation en cours...');
-    setTimeout(() => {
-      setSyncStatus('Synchronisé');
-    }, 1200);
-  };
-
-  // Gestionnaire de soumission (Création ou Édition)
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    setError(null);
-    setSuccessMsg(null);
-
-    // 1. Validation de type stricte
-    if (typeof title !== 'string' || typeof content !== 'string') {
-      setError('Format de données non valide.');
-      return;
-    }
-
-    const trimmedTitle = title.trim();
-    const trimmedContent = content.trim();
-
-    if (!trimmedTitle || !trimmedContent) {
-      setError('Veuillez renseigner à la fois le titre et le contenu du résumé.');
-      return;
-    }
-
-    // 2. Contrôle strict de la limite de caractères (Rate limiting / Data cap)
-    if (trimmedContent.length > MAX_CHARS) {
-      setError(`Le résumé dépasse la limite autorisée de ${MAX_CHARS} caractères.`);
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      // 3. Sanitisation rigoureuse anti-XSS
-      const sanitizedTitle = sanitizeText(trimmedTitle);
-      const sanitizedContent = sanitizeText(trimmedContent);
-
-      let updatedNotes;
-
-      if (editingId !== null) {
-        // Mode Édition
-        updatedNotes = notes.map((note) =>
-          note.id === editingId
-            ? { ...note, title: sanitizedTitle, content: sanitizedContent, date: 'Modifié à l\'instant' }
-            : note
-        );
-        setSuccessMsg('Résumé de cours mis à jour avec succès.');
-        setEditingId(null);
-      } else {
-        // Mode Création
-        const newNote = {
-          id: Date.now(),
-          title: sanitizedTitle,
-          content: sanitizedContent,
-          date: 'Créé à l\'instant'
-        };
-        updatedNotes = [newNote, ...notes];
-        setSuccessMsg('Nouveau résumé enregistré avec succès.');
-      }
-
-      // 4. Persistance
-      persistNotesLocally(updatedNotes);
-      setNotes(updatedNotes);
-      setTitle('');
-      setContent('');
-    } catch (err) {
-      // 5. Gestion défensive des erreurs sans fuite technique
-      setError(err.message || "Une erreur est survenue lors de l'enregistrement de la note.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Fonction de préparation à l'édition d'une note
-  const handleEdit = (note) => {
-    setEditingId(note.id);
-    setTitle(note.title);
-    setContent(note.content);
-    setError(null);
-    setSuccessMsg(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  // Suppression sécurisée d'une note
-  const handleDelete = (id) => {
-    if (typeof id !== 'number') return;
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce résumé de cours ?')) {
+  /* Sauvegarde automatique (la matière modifiée passe en premier : elle apparaît sur le dashboard) */
+  useEffect(() => {
+    if (!ready) return;
+    setStatus('saving');
+    const t = setTimeout(() => {
       try {
-        const updatedNotes = notes.filter((n) => n.id !== id);
-        persistNotesLocally(updatedNotes);
-        setNotes(updatedNotes);
-        setSuccessMsg('Résumé supprimé avec succès.');
-        if (editingId === id) {
-          setEditingId(null);
-          setTitle('');
-          setContent('');
-        }
-      } catch (err) {
-        setError("Impossible de supprimer cette note pour le moment.");
+        const last = lastEdited.current;
+        const ordered = {};
+        if (last && last in notes) ordered[last] = notes[last];
+        Object.keys(notes).forEach((k) => {
+          if (k !== last) ordered[k] = notes[k];
+        });
+        localStorage.setItem(KEY, JSON.stringify(ordered));
+        setStatus('saved');
+      } catch {
+        setStatus('error');
       }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [notes, ready]);
+
+  const flash = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2200);
+  };
+
+  /* Actions */
+  const subjects = Object.keys(notes);
+  const text = notes[active] || '';
+  const count = text.length;
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const left = MAX - count;
+  const danger = count >= MAX * 0.9;
+
+  const edit = (e) => {
+    const v = e.target.value.slice(0, MAX);
+    lastEdited.current = active;
+    setNotes((p) => ({ ...p, [active]: v }));
+  };
+
+  const addSubject = (name) => {
+    const n = name.trim().slice(0, 30);
+    if (!n) return;
+    const exists = subjects.find((s) => s.toLowerCase() === n.toLowerCase());
+    if (exists) {
+      setActive(exists);
+    } else {
+      setNotes((p) => ({ ...p, [n]: '' }));
+      setActive(n);
+      lastEdited.current = n;
+    }
+    setNewSub('');
+    setAdding(false);
+  };
+
+  const removeSubject = () => {
+    if (!active) return;
+    if (!window.confirm(`Supprimer « ${active} » et son résumé ?`)) return;
+    const next = { ...notes };
+    delete next[active];
+    setNotes(next);
+    const rest = Object.keys(next);
+    setActive(rest[0] || '');
+    lastEdited.current = rest[0] || '';
+    if (rest.length === 0) setAdding(true);
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash('Résumé copié.');
+    } catch {
+      flash('Copie impossible sur ce navigateur.');
     }
   };
 
-  // Annulation de l'édition en cours
-  const handleCancelEdit = () => {
-    setEditingId(null);
-    setTitle('');
-    setContent('');
-    setError(null);
-  };
+  const statusLabel = useMemo(() => {
+    if (status === 'saving') return 'Enregistrement…';
+    if (status === 'saved') return 'Enregistré sur ce téléphone';
+    if (status === 'error') return 'Stockage plein : non enregistré';
+    return '';
+  }, [status]);
+
+  const suggestions = SUGGESTIONS.filter((s) => !subjects.some((x) => x.toLowerCase() === s.toLowerCase()));
 
   return (
-    <div className="min-h-screen bg-white text-[#0F172A] font-sans antialiased selection:bg-[#2563EB] selection:text-white">
-      
-      {/* Barre de navigation supérieure */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center text-white font-bold text-xl shadow-md shadow-blue-500/20">
-              CK
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-[#0F172A]">CampusKin</h1>
-              <span className="text-xs text-slate-500 font-medium">Espace Notes & Résumés de Cours</span>
-            </div>
-          </div>
+    <main className="min-h-screen bg-slate-50 pb-36">
+      <style>{`
+        @keyframes nUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes nToast{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+        .n-in{animation:nUp .5s cubic-bezier(.2,.7,.2,1) both}
+      `}</style>
 
-          {/* Indicateur de statut réseau & synchronisation */}
-          <div className="flex items-center space-x-3">
-            <div className="hidden sm:flex items-center space-x-2 px-3 py-1 bg-slate-50 border border-slate-200 rounded-full text-xs font-medium text-slate-600">
-              <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
-              <span>{syncStatus}</span>
-            </div>
-            <a
-              href="/"
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#0F172A] text-xs font-semibold rounded-xl transition-all"
-            >
-              Retour Tableau de bord
-            </a>
-          </div>
+      {/* En-tête */}
+      <header className="relative overflow-hidden bg-[#0F172A] px-5 pb-16 pt-[max(env(safe-area-inset-top),2rem)] text-white">
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#2563EB]/40 blur-[90px]" />
+        <div className="relative mx-auto max-w-3xl">
+          <p className="text-[11px] uppercase tracking-[0.35em] text-white/60">Résumés de cours</p>
+          <h1 className="mt-3 text-3xl font-light uppercase tracking-tight sm:text-4xl">
+            Tes <span className="font-semibold text-[#60a5fa]">notes.</span>
+          </h1>
+          <p className="mt-3 text-xs uppercase tracking-wide text-white/60">
+            {subjects.length} matière{subjects.length > 1 ? 's' : ''} · fonctionne sans internet
+          </p>
         </div>
       </header>
 
-      {/* Contenu Principal */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        
-        {/* Messages d'alerte ou de succès (Fail-safe UI) */}
-        {error && (
-          <div className="p-4 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-2xl font-medium animate-fadeIn shadow-sm">
-            ⚠️ {error}
-          </div>
-        )}
+      <div className="relative z-10 mx-auto -mt-8 max-w-3xl space-y-4 px-4 sm:px-5">
+        {/* Matières */}
+        <div className="no-scrollbar flex items-center gap-2 overflow-x-auto rounded-2xl bg-white p-2 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
+          {subjects.map((s) => (
+            <button
+              key={s}
+              onClick={() => {
+                setActive(s);
+                setAdding(false);
+              }}
+              className={`shrink-0 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition active:scale-95 ${
+                s === active && !adding ? 'bg-[#0F172A] text-white' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {s}
+              {notes[s] ? <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-[#2563EB]" /> : null}
+            </button>
+          ))}
+          <button
+            onClick={() => setAdding(true)}
+            className={`shrink-0 rounded-xl border border-dashed px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition active:scale-95 ${
+              adding ? 'border-[#2563EB] bg-[#2563EB]/10 text-[#2563EB]' : 'border-slate-300 text-slate-400 hover:text-[#2563EB]'
+            }`}
+          >
+            + Matière
+          </button>
+        </div>
 
-        {successMsg && (
-          <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-2xl font-medium animate-fadeIn shadow-sm">
-            ✨ {successMsg}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Formulaire de rédaction / édition sécurisé */}
-          <div className="lg:col-span-1 bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50 h-fit sticky top-24">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold text-[#0F172A]">
-                  {editingId !== null ? 'Modifier le résumé' : 'Nouveau Résumé'}
-                </h2>
-                <p className="text-xs text-slate-500">Rédigez et stockez vos cours en toute sécurité.</p>
-              </div>
-              {editingId !== null && (
-                <button
-                  type="button"
-                  onClick={handleCancelEdit}
-                  className="text-xs text-slate-400 hover:text-slate-600 underline font-medium"
-                >
-                  Annuler
-                </button>
-              )}
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Titre du cours</label>
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Ex: Architecture Microservices"
-                  maxLength={120}
-                  required
-                  className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] focus:bg-white transition-all text-[#0F172A]"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-xs font-semibold text-slate-700">Contenu du résumé</label>
-                  <span className={`text-[11px] font-medium ${content.length > MAX_CHARS * 0.9 ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
-                    {content.length} / {MAX_CHARS} caractères
-                  </span>
-                </div>
-                <textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Synthétisez les points essentiels du cours..."
-                  rows={8}
-                  maxLength={MAX_CHARS}
-                  required
-                  className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] focus:bg-white transition-all text-[#0F172A] resize-none"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-3 px-4 bg-[#2563EB] hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-500/25 transition-all duration-200 disabled:opacity-50 flex items-center justify-center space-x-2 cursor-pointer"
-              >
-                {isLoading ? (
-                  <span>Enregistrement en cours...</span>
-                ) : (
-                  <span>{editingId !== null ? 'Mettre à jour le résumé' : 'Enregistrer le résumé'}</span>
-                )}
-              </button>
+        {/* Ajout d'une matière */}
+        {adding && (
+          <div key="add" className="ck-card n-in">
+            <h2 className="ck-title">Nouvelle matière</h2>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                addSubject(newSub);
+              }}
+              className="mt-3 flex gap-2"
+            >
+              <input
+                autoFocus
+                value={newSub}
+                onChange={(e) => setNewSub(e.target.value)}
+                maxLength={30}
+                placeholder="Ex : Algorithmique"
+                className="ck-input"
+              />
+              <button className="ck-btn !px-5">Ajouter</button>
             </form>
-          </div>
-
-          {/* Liste des résumés de l'étudiant */}
-          <div className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[#0F172A]">Mes Notes de Cours Enregistrées</h2>
-              <span className="text-xs text-slate-500 font-medium bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
-                {notes.length} document{notes.length > 1 ? 's' : ''} disponible{notes.length > 1 ? 's' : ''}
-              </span>
-            </div>
-
-            {notes.length === 0 ? (
-              <div className="bg-white rounded-2xl p-12 text-center border border-slate-100 shadow-xl shadow-slate-100/50">
-                <div className="w-12 h-12 bg-blue-50 text-[#2563EB] rounded-2xl flex items-center justify-center mx-auto mb-3 font-bold text-lg">
-                  📝
-                </div>
-                <h3 className="text-base font-bold text-[#0F172A]">Aucun résumé pour le moment</h3>
-                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                  Commencez par rédiger votre premier résumé de cours via le formulaire pour le conserver en local et hors-ligne.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {notes.map((note) => (
-                  <div
-                    key={note.id}
-                    className="bg-white rounded-2xl p-6 border border-slate-100 shadow-lg shadow-slate-100/50 hover:border-blue-200 transition-all duration-200 group relative overflow-hidden"
+            {suggestions.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {suggestions.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => addSubject(s)}
+                    className="rounded-full bg-[#2563EB]/10 px-3 py-1.5 text-xs font-semibold text-[#2563EB] transition hover:bg-[#2563EB] hover:text-white active:scale-95"
                   >
-                    <div className="absolute top-0 left-0 w-1.5 h-full bg-[#2563EB] opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                    
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h3 className="text-base font-bold text-[#0F172A] group-hover:text-[#2563EB] transition-colors">
-                          {note.title}
-                        </h3>
-                        <span className="text-[11px] font-medium text-slate-400 mt-0.5 inline-block">
-                          {note.date}
-                        </span>
-                      </div>
-                      
-                      {/* Actions sur la note */}
-                      <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => handleEdit(note)}
-                          className="px-3 py-1.5 bg-slate-50 hover:bg-blue-50 text-slate-600 hover:text-[#2563EB] text-xs font-semibold rounded-lg transition-colors border border-slate-100"
-                        >
-                          Modifier
-                        </button>
-                        <button
-                          onClick={() => handleDelete(note.id)}
-                          className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-semibold rounded-lg transition-colors border border-rose-100"
-                        >
-                          Supprimer
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Affichage sécurisé du contenu (sans HTML brut / sans dangerouslySetInnerHTML) */}
-                    <p className="text-sm text-slate-600 mt-4 leading-relaxed whitespace-pre-wrap">
-                      {note.content}
-                    </p>
-                  </div>
+                    + {s}
+                  </button>
                 ))}
               </div>
             )}
           </div>
+        )}
 
+        {/* Éditeur */}
+        {!adding && active && (
+          <div key={active} className="ck-card n-in">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="truncate text-lg font-semibold uppercase tracking-tight">{active}</h2>
+              <div className="flex shrink-0 gap-1">
+                <button
+                  onClick={copy}
+                  disabled={!text}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-[#2563EB] transition hover:bg-[#2563EB]/10 disabled:opacity-30"
+                >
+                  Copier
+                </button>
+                <button
+                  onClick={removeSubject}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                >
+                  Supprimer
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              value={text}
+              onChange={edit}
+              maxLength={MAX}
+              rows={12}
+              placeholder="Écris ton résumé ici : définitions, formules, points clés du cours…"
+              className="mt-4 min-h-[16rem] w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 leading-relaxed outline-none transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/20"
+            />
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <Ring count={count} />
+                  <span
+                    className={`absolute inset-0 flex items-center justify-center text-[9px] font-semibold ${
+                      danger ? 'text-red-500' : 'text-slate-500'
+                    }`}
+                  >
+                    {Math.round((count / MAX) * 100)}%
+                  </span>
+                </div>
+                <div>
+                  <div className={`text-sm font-semibold tabular-nums ${danger ? 'text-red-600' : 'text-[#0F172A]'}`}>
+                    {count.toLocaleString('fr-FR')} / {MAX.toLocaleString('fr-FR')}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    {left === 0 ? 'Limite atteinte' : `${left.toLocaleString('fr-FR')} restants`} · {words} mot
+                    {words > 1 ? 's' : ''}
+                  </div>
+                </div>
+              </div>
+
+              <span
+                role="status"
+                className={`text-right text-[11px] ${status === 'error' ? 'font-semibold text-red-600' : 'text-slate-400'}`}
+              >
+                {status === 'saved' && <span className="mr-1 text-emerald-500">✓</span>}
+                {statusLabel}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Aucun contenu */}
+        {!adding && !active && ready && (
+          <div className="ck-card n-in text-center">
+            <p className="text-sm text-slate-500">Aucune matière pour le moment.</p>
+            <button onClick={() => setAdding(true)} className="ck-btn mt-4">
+              Ajouter ma première matière
+            </button>
+          </div>
+        )}
+      </div>
+
+      {toast && (
+        <div
+          role="status"
+          style={{ animation: 'nToast .3s ease-out both' }}
+          className="fixed bottom-28 left-1/2 z-[130] -translate-x-1/2 rounded-xl bg-[#0F172A] px-5 py-3 text-sm font-medium text-white shadow-2xl"
+        >
+          {toast}
         </div>
-      </main>
-    </div>
+      )}
+    </main>
   );
 }
