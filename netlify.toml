@@ -1,6 +1,16 @@
+# netlify.toml
 [build]
   command = "npm run build"
   publish = ".next"
 
+[build.environment]
+  NODE_VERSION = "20"
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+    Cache-Control = "public, max-age=3600"
