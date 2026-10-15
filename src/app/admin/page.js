@@ -1,525 +1,582 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { supabase } from '../../lib/supabase';
 
-// Initialisation sécurisée du client Supabase (Variables d'environnement publiques)
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const FEE = 0.025; // 2,5 % de frais SasPay
 
-/**
- * Fonction d'assainissement et d'échappement des entrées textuelles (Anti-XSS)
- */
-const sanitizeText = (str) => {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-};
+const TABS = [
+  { id: 'apercu', label: 'Aperçu' },
+  { id: 'annonces', label: 'Annonces' },
+  { id: 'questions', label: 'Questions' },
+  { id: 'etudiants', label: 'Étudiants' },
+  { id: 'paiement', label: 'Paiement' },
+];
 
-// Validation stricte des numéros Mobile Money RDC
-const validateRDCPhone = (phone) => {
-  const cleaned = phone.replace(/\s+/g, '');
-  const rdcRegex = /^(?:\+243|0)[1-9]\d{8}$/;
-  return rdcRegex.test(cleaned);
-};
+const fmt = (n, d = 0) =>
+  Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
 
-const STORAGE_ADMIN_ANNOUNCEMENTS = 'campuskin_admin_announcements_v1';
-const STORAGE_ADMIN_QUESTIONS = 'campuskin_admin_questions_v1';
-const SASPAY_FEE_PERCENT = 2.5;
+const dateFr = (d) =>
+  d ? new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 
-export default function CampusKinAdminPage() {
-  // États de sécurité et d'authentification (RBAC)
-  const [isAuthorized, setIsAuthorized] = useState(false);
-  const [authChecking, setAuthChecking] = useState(true);
-  const [userRole, setUserRole] = useState(null);
+export default function AdminPage() {
+  const router = useRouter();
 
-  // États pour les annonces officielles
-  const [announcementTitle, setAnnouncementTitle] = useState('');
-  const [announcementContent, setAnnouncementContent] = useState('');
-  const [announcementCategory, setAnnouncementCategory] = useState('Officiel Administration');
-  const [isUrgent, setIsUrgent] = useState(false);
-  const [announcements, setAnnouncements] = useState([]);
+  const [phase, setPhase] = useState('check'); // check | denied | ok
+  const [me, setMe] = useState(null); // { id, nom, role }
+  const [token, setToken] = useState('');
+  const [tab, setTab] = useState('apercu');
+  const [toast, setToast] = useState(null);
+  const [dbError, setDbError] = useState('');
 
-  // États pour les questions des étudiants (Q&A)
-  const [studentQuestions, setStudentQuestions] = useState([]);
-  const [replyText, setReplyText] = useState({});
+  const [annonces, setAnnonces] = useState([]);
+  const [questions, setQuestions] = useState([]);
+  const [profils, setProfils] = useState([]);
+  const [paiements, setPaiements] = useState([]);
 
-  // États pour le module SasPay et Statistiques financières
-  const [planAmount, setPlanAmount] = useState(15);
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [paymentLoading, setPaymentLoading] = useState(false);
-  const [financialStats, setFinancialStats] = useState({
-    totalRevenue: '---',
-    activeSubscribers: '---',
-    groupStatus: 'Vérification...'
-  });
+  /* Formulaires */
+  const [titre, setTitre] = useState('');
+  const [contenu, setContenu] = useState('');
+  const [urgent, setUrgent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [reponses, setReponses] = useState({});
+  const [search, setSearch] = useState('');
 
-  // États généraux d'interface (Fail-safe UI)
-  const [error, setError] = useState(null);
-  const [successMsg, setSuccessMsg] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  /* Paiement */
+  const [montant, setMontant] = useState('10');
+  const [devise, setDevise] = useState('USD');
+  const [tel, setTel] = useState('');
+  const [payMsg, setPayMsg] = useState('');
 
-  /**
-   * Vérification rigoureuse de la session et du rôle (RBAC & Deny by default)
-   */
+  const notify = (text, type = 'ok') => {
+    setToast({ text, type });
+    setTimeout(() => setToast(null), 3200);
+  };
+
+  /* ---------- Contrôle d'accès (RBAC) ---------- */
   useEffect(() => {
-    let isMounted = true;
+    (async () => {
+      if (!supabase) return setPhase('denied');
+      const { data: sess } = await supabase.auth.getSession();
+      const user = sess?.session?.user;
+      if (!user) return setPhase('denied');
+      setToken(sess.session.access_token);
 
-    async function verifyAdminSession() {
-      try {
-        setAuthChecking(true);
-        setError(null);
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('id, nom, role')
+        .eq('id', user.id)
+        .single();
 
-        // 1. Récupération de l'utilisateur connecté via Supabase Auth
-        const { data: authData, error: authError } = await supabase.auth.getUser();
-
-        if (authError || !authData?.user) {
-          // Pas de session active -> Redirection immédiate vers la page de connexion
-          if (isMounted) {
-            window.location.href = '/login';
-          }
-          return;
-        }
-
-        const currentUser = authData.user;
-
-        // 2. Interrogation sécurisée de la table profiles / users pour valider le rôle
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .ких || supabase.from('users').select('role').eq('id', currentUser.id).single();
-
-        // En mode hors-ligne ou si la table n'est pas encore initialisée, application stricte du principe "Deny by default"
-        const role = profileData?.role || currentUser.user_metadata?.role || 'standard';
-        setUserRole(role);
-
-        // 3. Restriction stricte : Seuls "admin" ou "delegue_verifie" sont autorisés
-        if (role === 'admin' || role === 'delegue_verifie') {
-          if (isMounted) {
-            setIsAuthorized(true);
-            fetchSecureAdminData();
-          }
-        } else {
-          if (isMounted) {
-            setIsAuthorized(false);
-            setError("Accès refusé : Privilèges administrateur insuffisants.");
-          }
-        }
-      } catch (err) {
-        // Gestion défensive : En cas d'erreur critique, blocage total de l'accès
-        if (isMounted) {
-          setIsAuthorized(false);
-          setError("Erreur critique lors de la vérification des accréditations de sécurité.");
-        }
-      } finally {
-        if (isMounted) {
-          setAuthChecking(false);
-        }
+      if (!prof || !['delegue', 'admin'].includes(prof.role)) {
+        setPhase('denied');
+        setTimeout(() => router.replace('/'), 2200);
+        return;
       }
-    }
+      setMe(prof);
+      setPhase('ok');
+    })();
+  }, [router]);
 
-    verifyAdminSession();
-
-    // Chargement de secours local pour le mode développement ou hors-ligne
-    try {
-      const savedAnnouncements = localStorage.getItem(STORAGE_ADMIN_ANNOUNCEMENTS);
-      if (savedAnnouncements) setAnnouncements(JSON.parse(savedAnnouncements));
-
-      const savedQuestions = localStorage.getItem(STORAGE_ADMIN_QUESTIONS);
-      if (savedQuestions) setStudentQuestions(JSON.parse(savedQuestions));
-    } catch (e) {
-      // Ignorer l'erreur locale silencieusement
-    }
-
-    return () => {
-      isMounted = false;
-    };
+  /* ---------- Chargement des données ---------- */
+  const load = useCallback(async () => {
+    setDbError('');
+    const [a, q, p, pay] = await Promise.all([
+      supabase.from('annonces').select('*').order('created_at', { ascending: false }),
+      supabase.from('questions').select('*').order('created_at', { ascending: false }),
+      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+      supabase.from('paiements').select('*').order('created_at', { ascending: false }).limit(20),
+    ]);
+    const err = [a, q, p, pay].find((r) => r.error);
+    if (err) setDbError(`Erreur Supabase : ${err.error.message}. As-tu exécuté tout le SQL ?`);
+    setAnnonces(a.data || []);
+    setQuestions(q.data || []);
+    setProfils(p.data || []);
+    setPaiements(pay.data || []);
   }, []);
 
-  // Récupération sécurisée des données financières (protégée par RLS)
-  const fetchSecureAdminData = async () => {
-    try {
-      // Appel des données filtrées par les politiques RLS de Supabase
-      setFinancialStats({
-        totalRevenue: '$ 1,860.00',
-        activeSubscribers: '124',
-        groupStatus: 'Actif & Sécurisé'
-      });
-    } catch (err) {
-      setFinancialStats({
-        totalRevenue: 'Protégé',
-        activeSubscribers: 'Protégé',
-        groupStatus: 'Erreur de synchronisation'
-      });
-    }
+  useEffect(() => {
+    if (phase === 'ok') load();
+  }, [phase, load]);
+
+  /* ---------- Annonces ---------- */
+  const publier = async (e) => {
+    e.preventDefault();
+    if (titre.trim().length < 3) return notify('Le titre est trop court.', 'err');
+    setBusy(true);
+    const { error } = await supabase.from('annonces').insert({
+      titre: titre.trim(),
+      contenu: contenu.trim() || null,
+      urgent,
+      auteur: me.id,
+    });
+    setBusy(false);
+    if (error) return notify(error.message, 'err');
+    setTitre('');
+    setContenu('');
+    setUrgent(false);
+    notify('Annonce publiée.');
+    load();
   };
 
-  // Calcul automatique des frais SasPay (2,5%)
-  const calculatedFee = (Number(planAmount) * SASPAY_FEE_PERCENT) / 100;
-  const totalAmountToPay = Number(planAmount) + calculatedFee;
+  const supprimer = async (id) => {
+    if (!window.confirm('Supprimer cette annonce ?')) return;
+    const { error } = await supabase.from('annonces').delete().eq('id', id);
+    if (error) return notify(error.message, 'err');
+    notify('Annonce supprimée.');
+    load();
+  };
 
-  // Publication sécurisée d'une annonce officielle
-  const handlePublishAnnouncement = (e) => {
-    e.preventDefault();
-    if (!isAuthorized) return;
-    setError(null);
-    setSuccessMsg(null);
+  /* ---------- Questions ---------- */
+  const repondre = async (id) => {
+    const txt = (reponses[id] || '').trim();
+    if (!txt) return;
+    const { error } = await supabase
+      .from('questions')
+      .update({ reponse: txt, repondu_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) return notify(error.message, 'err');
+    setReponses((r) => ({ ...r, [id]: '' }));
+    notify('Réponse envoyée.');
+    load();
+  };
 
-    const trimmedTitle = announcementTitle.trim();
-    const trimmedContent = announcementContent.trim();
+  /* ---------- Paiement SasPay ---------- */
+  const calc = useMemo(() => {
+    const base = parseFloat(String(montant).replace(',', '.')) || 0;
+    const frais =
+      devise === 'USD'
+        ? Math.ceil(base * FEE * 100 - 1e-9) / 100
+        : Math.ceil(base * FEE - 1e-9);
+    return { base, frais, total: base + frais };
+  }, [montant, devise]);
 
-    if (!trimmedTitle || !trimmedContent) {
-      setError('Veuillez remplir tous les champs obligatoires.');
-      return;
-    }
-
-    if (trimmedTitle.length > 150 || trimmedContent.length > 2000) {
-      setError('L\'annonce dépasse les limites de caractères autorisées.');
-      return;
-    }
-
-    setIsLoading(true);
-
+  const payer = async () => {
+    setPayMsg('');
+    if (calc.base <= 0) return setPayMsg('Entre un montant valide.');
+    setBusy(true);
     try {
-      const newAnnouncement = {
-        id: Date.now(),
-        title: sanitizeText(trimmedTitle),
-        content: sanitizeText(trimmedContent),
-        category: sanitizeText(announcementCategory),
-        date: 'À l’instant',
-        urgent: isUrgent
-      };
+      const { data: row, error } = await supabase
+        .from('paiements')
+        .insert({
+          user_id: me.id,
+          montant: calc.base,
+          frais: calc.frais,
+          total: calc.total,
+          devise,
+          telephone: tel.trim() || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
 
-      const updatedList = [newAnnouncement, ...announcements];
-      setAnnouncements(updatedList);
-      setAnnouncementTitle('');
-      setAnnouncementContent('');
-      setIsUrgent(false);
-      setSuccessMsg('Annonce officielle publiée avec succès.');
+      const res = await fetch('/api/saspay/initier', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ paiement_id: row.id }),
+      });
 
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(STORAGE_ADMIN_ANNOUNCEMENTS, JSON.stringify(updatedList));
+      if (res.status === 404) {
+        setPayMsg("La passerelle SasPay n'est pas encore branchée côté serveur. Le paiement est enregistré « en attente ».");
+      } else {
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out.error || 'Échec SasPay.');
+        if (out.url) {
+          window.location.href = out.url;
+          return;
+        }
+        notify('Paiement initié.');
       }
+      load();
     } catch (err) {
-      setError("Erreur lors de la publication de l'annonce.");
+      setPayMsg(err.message || 'Erreur de paiement.');
     } finally {
-      setIsLoading(false);
+      setBusy(false);
     }
   };
 
-  // Réponse sécurisée aux questions des étudiants
-  const handleReplyQuestion = (questionId) => {
-    if (!isAuthorized) return;
-    setError(null);
-    setSuccessMsg(null);
+  /* ---------- Statistiques ---------- */
+  const sansReponse = questions.filter((q) => !q.reponse).length;
+  const confirmes = paiements.filter((p) => p.statut === 'confirme');
+  const filtres = profils.filter((p) =>
+    `${p.nom || ''} ${p.email || ''} ${p.promotion || ''}`.toLowerCase().includes(search.toLowerCase())
+  );
 
-    const reply = replyText[questionId];
-    if (!reply || !reply.trim()) {
-      setError('La réponse ne peut pas être vide.');
-      return;
-    }
-
-    try {
-      const sanitizedReply = sanitizeText(reply.trim());
-      const updatedQuestions = studentQuestions.map((q) =>
-        q.id === questionId ? { ...q, reply: sanitizedReply } : q
-      );
-
-      setStudentQuestions(updatedQuestions);
-      setSuccessMsg('Réponse transmise à l\'étudiant.');
-      setReplyText({ ...replyText, [questionId]: '' });
-
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(STORAGE_ADMIN_QUESTIONS, JSON.stringify(updatedQuestions));
-      }
-    } catch (err) {
-      setError("Erreur lors de l'enregistrement de la réponse.");
-    }
-  };
-
-  // Paiement SasPay sécurisé avec rate-limiting côté client
-  const handleSasPayCheckout = (e) => {
-    e.preventDefault();
-    if (!isAuthorized || paymentLoading) return;
-    setError(null);
-    setSuccessMsg(null);
-
-    if (!validateRDCPhone(phoneNumber)) {
-      setError('Numéro Mobile Money invalide. Utilisez un format RDC valide (ex: 0812345678).');
-      return;
-    }
-
-    setPaymentLoading(true);
-
-    setTimeout(() => {
-      setPaymentLoading(false);
-      setSuccessMsg(`Paiement de $${totalAmountToPay.toFixed(2)} initié avec succès sur le numéro ${phoneNumber}.`);
-      setPhoneNumber('');
-    }, 2000);
-  };
-
-  // Affichage pendant la vérification des privilèges
-  if (authChecking) {
+  /* ---------- Écrans d'attente / refus ---------- */
+  if (phase === 'check')
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-6 text-center">
-        <div className="space-y-4">
-          <div className="w-10 h-10 border-4 border-[#2563EB] border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="text-sm font-medium text-slate-600">Vérification des accréditations de sécurité...</p>
-        </div>
-      </div>
+      <main className="flex min-h-screen items-center justify-center bg-[#0F172A]">
+        <span className="animate-pulse text-xs uppercase tracking-[0.4em] text-white/60">Vérification…</span>
+      </main>
     );
-  }
 
-  // Écran de refus d'accès (Deny by default)
-  if (!isAuthorized) {
+  if (phase === 'denied')
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-6 text-center">
-        <div className="max-w-md bg-white rounded-2xl p-8 border border-slate-100 shadow-2xl space-y-4">
-          <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto font-bold text-lg">
-            ⛔
-          </div>
-          <h1 className="text-xl font-bold text-[#0F172A]">Accès Strictement Restreint</h1>
-          <p className="text-xs text-slate-500">
-            {error || "Vous ne disposez pas des privilèges requis (Administrateur / Délégué vérifié) pour accéder aux données financières et administratives de CampusKin."}
-          </p>
-          <a
-            href="/"
-            className="inline-block w-full py-3 px-4 bg-[#2563EB] text-white font-semibold text-xs rounded-xl shadow-lg shadow-blue-500/20"
-          >
-            Retour au tableau de bord
-          </a>
+      <main className="flex min-h-screen flex-col items-center justify-center bg-[#0F172A] px-8 text-center text-white">
+        <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#2563EB]/20 ring-1 ring-[#2563EB]/50">
+          <svg viewBox="0 0 24 24" className="h-8 w-8 fill-none stroke-[#60a5fa] stroke-[1.6] [stroke-linecap:round] [stroke-linejoin:round]">
+            <rect x="5" y="11" width="14" height="9" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+          </svg>
         </div>
-      </div>
+        <h1 className="text-2xl font-light uppercase tracking-tight">Accès réservé</h1>
+        <p className="mt-3 max-w-xs text-sm text-white/60">
+          Cette console est réservée au délégué et à l'administrateur. Retour à l'accueil…
+        </p>
+      </main>
     );
-  }
 
+  /* ---------- Console ---------- */
   return (
-    <div className="min-h-screen bg-white text-[#0F172A] font-sans antialiased selection:bg-[#2563EB] selection:text-white">
-      
-      {/* Barre de navigation supérieure */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center text-white font-bold text-xl shadow-md shadow-blue-500/20">
-              CK
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-[#0F172A]">CampusKin</h1>
-              <span className="text-xs text-slate-500 font-medium">Console Admin Sécurisée (RBAC)</span>
-            </div>
-          </div>
-          <div className="flex items-center space-x-3">
-            <span className="hidden sm:inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-[#2563EB]">
-              Rôle : {userRole}
+    <main className="min-h-screen bg-slate-50 pb-36">
+      <style>{`
+        @keyframes aUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes aToast{from{opacity:0;transform:translate(-50%,-12px)}to{opacity:1;transform:translate(-50%,0)}}
+        .a-in{animation:aUp .5s cubic-bezier(.2,.7,.2,1) both}
+      `}</style>
+
+      {/* En-tête */}
+      <header className="relative overflow-hidden bg-[#0F172A] px-5 pb-16 pt-[max(env(safe-area-inset-top),2rem)] text-white">
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#2563EB]/40 blur-[90px]" />
+        <div className="relative mx-auto max-w-5xl">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] uppercase tracking-[0.35em] text-white/60">Console · CampusKin</p>
+            <span className="rounded-full bg-[#2563EB] px-3 py-1 text-[10px] font-semibold uppercase tracking-widest">
+              {me.role}
             </span>
-            <a
-              href="/"
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#0F172A] text-xs font-semibold rounded-xl transition-all"
-            >
-              Tableau de bord
-            </a>
           </div>
+          <h1 className="mt-3 text-3xl font-light uppercase tracking-tight sm:text-4xl">
+            Salut, <span className="font-semibold text-[#60a5fa]">{(me.nom || 'délégué').split(' ')[0]}.</span>
+          </h1>
         </div>
       </header>
 
-      {/* Contenu Principal */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-
-        {error && (
-          <div className="p-4 bg-rose-50 border border-rose-200 text-rose-700 text-sm rounded-2xl font-medium shadow-sm">
-            ⚠️ {error}
-          </div>
-        )}
-
-        {successMsg && (
-          <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-2xl font-medium shadow-sm">
-            ✨ {successMsg}
-          </div>
-        )}
-
-        {/* Widgets Financiers et Statistiques Sécurisés */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Chiffre d'Affaires Global</p>
-            <h3 className="text-3xl font-extrabold text-[#0F172A] mt-2">{financialStats.totalRevenue}</h3>
-            <span className="text-xs text-emerald-600 font-medium mt-2 inline-block">Protégé par RLS Supabase</span>
-          </div>
-          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Abonnés Actifs</p>
-            <h3 className="text-3xl font-extrabold text-[#0F172A] mt-2">{financialStats.activeSubscribers}</h3>
-            <span className="text-xs text-blue-600 font-medium mt-2 inline-block">Vérification de rôle active</span>
-          </div>
-          <div className="bg-[#0F172A] text-white rounded-2xl p-6 shadow-xl relative overflow-hidden">
-            <p className="text-xs font-semibold uppercase tracking-wider text-blue-300">Statut du Groupe</p>
-            <h3 className="text-2xl font-bold mt-2">{financialStats.groupStatus}</h3>
-            <span className="text-xs text-slate-300 mt-2 inline-block">Chiffrement de bout en bout</span>
-          </div>
+      <div className="relative z-10 mx-auto -mt-8 max-w-5xl px-4 sm:px-5">
+        {/* Onglets */}
+        <div className="no-scrollbar flex gap-1 overflow-x-auto rounded-2xl bg-white p-1.5 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`relative shrink-0 rounded-xl px-4 py-2.5 text-xs font-semibold uppercase tracking-widest transition ${
+                tab === t.id ? 'bg-[#0F172A] text-white' : 'text-slate-500 hover:text-[#0F172A]'
+              }`}
+            >
+              {t.label}
+              {t.id === 'questions' && sansReponse > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#2563EB] px-1 text-[9px] text-white">
+                  {sansReponse}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Colonne Principale : Annonces & Q&A */}
-          <div className="lg:col-span-2 space-y-8">
-            
-            {/* Formulaire d'annonces */}
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-              <h2 className="text-lg font-bold text-[#0F172A] mb-1">Publier une Annonce Officielle</h2>
-              <p className="text-xs text-slate-500 mb-6">Diffusion sécurisée aux membres de la promotion.</p>
+        {dbError && (
+          <div role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {dbError}
+          </div>
+        )}
 
-              <form onSubmit={handlePublishAnnouncement} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Titre de l'annonce</label>
-                    <input
-                      type="text"
-                      value={announcementTitle}
-                      onChange={(e) => setAnnouncementTitle(e.target.value)}
-                      placeholder="Ex: Note d'information"
-                      maxLength={150}
-                      required
-                      className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                    />
+        <div key={tab} className="a-in mt-5 space-y-5">
+          {/* ===== APERÇU ===== */}
+          {tab === 'apercu' && (
+            <>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {[
+                  { k: 'Étudiants', v: profils.length, s: 'inscrits' },
+                  { k: 'Annonces', v: annonces.length, s: 'publiées' },
+                  { k: 'Questions', v: sansReponse, s: 'sans réponse' },
+                  { k: 'Paiements', v: confirmes.length, s: 'confirmés' },
+                ].map((c) => (
+                  <div key={c.k} className="ck-card !p-4">
+                    <div className="text-[10px] uppercase tracking-widest text-slate-400">{c.k}</div>
+                    <div className="mt-1 text-3xl font-semibold tracking-tight text-[#0F172A]">{fmt(c.v)}</div>
+                    <div className="text-[11px] text-slate-400">{c.s}</div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Catégorie</label>
-                    <select
-                      value={announcementCategory}
-                      onChange={(e) => setAnnouncementCategory(e.target.value)}
-                      className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                    >
-                      <option value="Officiel Administration">Officiel Administration</option>
-                      <option value="Conférence Promotion">Conférence</option>
-                    </select>
-                  </div>
-                </div>
+                ))}
+              </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Contenu</label>
-                  <textarea
-                    value={announcementContent}
-                    onChange={(e) => setAnnouncementContent(e.target.value)}
-                    placeholder="Contenu..."
-                    rows={4}
-                    maxLength={2000}
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] resize-none"
-                  />
+              <div className="ck-card">
+                <h2 className="ck-title">Actions rapides</h2>
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <button onClick={() => setTab('annonces')} className="ck-btn">Publier une annonce</button>
+                  <button onClick={() => setTab('questions')} className="ck-btn-outline">
+                    Répondre aux questions
+                  </button>
+                  <button onClick={() => setTab('paiement')} className="ck-btn-outline">
+                    Abonnement du groupe
+                  </button>
                 </div>
+              </div>
+            </>
+          )}
 
-                <div className="flex items-center justify-between pt-2">
-                  <label className="flex items-center space-x-2 cursor-pointer">
+          {/* ===== ANNONCES ===== */}
+          {tab === 'annonces' && (
+            <>
+              <form onSubmit={publier} className="ck-card space-y-3">
+                <h2 className="ck-title">Nouvelle annonce officielle</h2>
+                <input
+                  value={titre}
+                  onChange={(e) => setTitre(e.target.value)}
+                  placeholder="Titre (ex : Examen de Programmation reporté)"
+                  maxLength={120}
+                  className="ck-input"
+                />
+                <textarea
+                  value={contenu}
+                  onChange={(e) => setContenu(e.target.value)}
+                  placeholder="Détails (optionnel)"
+                  rows={4}
+                  maxLength={1000}
+                  className="ck-input resize-none"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
                     <input
                       type="checkbox"
-                      checked={isUrgent}
-                      onChange={(e) => setIsUrgent(e.target.checked)}
-                      className="w-4 h-4 text-[#2563EB] border-slate-300 rounded"
+                      checked={urgent}
+                      onChange={(e) => setUrgent(e.target.checked)}
+                      className="h-5 w-5 accent-[#2563EB]"
                     />
-                    <span className="text-xs font-semibold text-slate-700">Urgent</span>
+                    Marquer comme urgent
                   </label>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="py-2.5 px-6 bg-[#2563EB] hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-lg shadow-blue-500/25 transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    {isLoading ? 'Publication...' : 'Publier'}
+                  <button disabled={busy} className="ck-btn">
+                    {busy ? 'Envoi…' : 'Publier'}
                   </button>
                 </div>
               </form>
-            </div>
 
-            {/* Q&A Étudiants */}
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50 space-y-4">
-              <h2 className="text-lg font-bold text-[#0F172A]">Questions des Étudiants</h2>
-              {studentQuestions.length === 0 ? (
-                <p className="text-xs text-slate-400">Aucune question en attente.</p>
-              ) : (
-                <div className="space-y-4">
-                  {studentQuestions.map((q) => (
-                    <div key={q.id} className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-2">
-                      <p className="text-sm font-semibold text-[#0F172A]">{q.text}</p>
-                      <div className="flex space-x-2">
-                        <input
-                          type="text"
-                          placeholder="Répondre..."
-                          value={replyText[q.id] || ''}
-                          onChange={(e) => setReplyText({ ...replyText, [q.id]: e.target.value })}
-                          className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
-                        />
-                        <button
-                          onClick={() => handleReplyQuestion(q.id)}
-                          className="px-3 py-1.5 bg-[#2563EB] text-white text-xs font-semibold rounded-lg"
-                        >
-                          Envoyer
-                        </button>
+              <div className="space-y-3">
+                {annonces.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+                    Aucune annonce publiée.
+                  </p>
+                )}
+                {annonces.map((a) => (
+                  <div key={a.id} className="ck-card !p-4 border-l-4 !border-l-[#2563EB]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-semibold leading-snug">{a.titre}</h3>
+                          {a.urgent && <span className="ck-badge">Urgent</span>}
+                        </div>
+                        {a.contenu && <p className="mt-1 text-sm text-slate-600">{a.contenu}</p>}
+                        <p className="mt-2 text-[11px] uppercase tracking-wider text-slate-400">
+                          {dateFr(a.created_at)}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => supprimer(a.id)}
+                        className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 hover:bg-red-50 hover:text-red-600"
+                      >
+                        Supprimer
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* ===== QUESTIONS ===== */}
+          {tab === 'questions' && (
+            <div className="space-y-3">
+              {questions.length === 0 && (
+                <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+                  Aucune question pour le moment.
+                </p>
+              )}
+              {questions.map((q) => (
+                <div key={q.id} className="ck-card !p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[#2563EB]">
+                      {q.auteur_nom || 'Étudiant'}
+                    </span>
+                    <span className="text-[11px] text-slate-400">{dateFr(q.created_at)}</span>
+                  </div>
+                  <p className="mt-2 text-sm font-medium">{q.texte}</p>
+
+                  {q.reponse ? (
+                    <div className="mt-3 rounded-xl bg-[#2563EB]/5 p-3 text-sm text-slate-700">
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-[#2563EB]">
+                        Ta réponse
+                      </div>
+                      {q.reponse}
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex gap-2">
+                      <input
+                        value={reponses[q.id] || ''}
+                        onChange={(e) => setReponses((r) => ({ ...r, [q.id]: e.target.value }))}
+                        placeholder="Ta réponse…"
+                        className="ck-input"
+                      />
+                      <button onClick={() => repondre(q.id)} className="ck-btn !px-4">
+                        Envoyer
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ===== ÉTUDIANTS ===== */}
+          {tab === 'etudiants' && (
+            <div className="ck-card">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="ck-title">{fmt(profils.length)} inscrits</h2>
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Rechercher…"
+                  className="ck-input !w-44 !py-2"
+                />
+              </div>
+              <ul className="mt-4 divide-y divide-slate-100">
+                {filtres.length === 0 && <li className="py-6 text-center text-sm text-slate-400">Aucun résultat.</li>}
+                {filtres.map((p) => (
+                  <li key={p.id} className="flex items-center justify-between gap-3 py-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#0F172A] text-sm font-semibold uppercase text-white">
+                        {(p.nom || p.email || '?').charAt(0)}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold">{p.nom || 'Sans nom'}</div>
+                        <div className="truncate text-xs text-slate-400">
+                          {p.promotion || '—'} · {p.email}
+                        </div>
                       </div>
                     </div>
+                    <span className={p.role === 'etudiant' ? 'text-[10px] uppercase tracking-wider text-slate-400' : 'ck-badge'}>
+                      {p.role}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* ===== PAIEMENT SASPAY ===== */}
+          {tab === 'paiement' && (
+            <>
+              <div className="ck-card-dark">
+                <h2 className="text-sm font-semibold uppercase tracking-widest text-white/70">
+                  Abonnement du groupe · SasPay
+                </h2>
+
+                <div className="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-white/5 p-1 ring-1 ring-white/10">
+                  {['USD', 'CDF'].map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setDevise(d)}
+                      className={`rounded-lg py-2 text-xs font-semibold uppercase tracking-widest transition ${
+                        devise === d ? 'bg-[#2563EB]' : 'text-white/60'
+                      }`}
+                    >
+                      {d}
+                    </button>
                   ))}
                 </div>
-              )}
-            </div>
 
-          </div>
-
-          {/* Colonne Latérale : SasPay Paiement Sécurisé */}
-          <div className="space-y-8">
-            <div className="bg-[#0F172A] text-white rounded-2xl p-6 shadow-2xl relative overflow-hidden">
-              <h2 className="text-lg font-bold mb-1">SasPay Gateway</h2>
-              <p className="text-xs text-slate-300 mb-6">Gestion des abonnements officiels du groupe.</p>
-
-              <form onSubmit={handleSasPayCheckout} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-blue-200 mb-1">Montant ($ USD)</label>
+                <label className="mt-4 block text-[11px] uppercase tracking-widest text-white/50">
+                  Montant de l'abonnement ({devise})
                   <input
-                    type="number"
-                    min="1"
-                    value={planAmount}
-                    onChange={(e) => setPlanAmount(Number(e.target.value))}
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-slate-800 border border-slate-700 rounded-xl text-white font-bold"
+                    inputMode="decimal"
+                    value={montant}
+                    onChange={(e) => setMontant(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-xl font-semibold normal-case tracking-normal outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/40"
                   />
-                </div>
+                </label>
 
-                <div>
-                  <label className="block text-xs font-semibold text-blue-200 mb-1">Numéro Mobile Money (RDC)</label>
+                <label className="mt-3 block text-[11px] uppercase tracking-widest text-white/50">
+                  Numéro Mobile Money (si demandé)
                   <input
-                    type="tel"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
-                    placeholder="Ex: 0812345678"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-slate-800 border border-slate-700 rounded-xl text-white"
+                    inputMode="tel"
+                    value={tel}
+                    onChange={(e) => setTel(e.target.value)}
+                    placeholder="+243…"
+                    className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 normal-case tracking-normal outline-none placeholder:text-white/30 focus:border-[#2563EB]"
                   />
-                </div>
+                </label>
 
-                <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700 text-xs space-y-1">
-                  <div className="flex justify-between text-slate-300">
-                    <span>Frais SasPay ({SASPAY_FEE_PERCENT}%) :</span>
-                    <span>$ {calculatedFee.toFixed(2)}</span>
+                <dl className="mt-5 space-y-2 rounded-xl bg-white/5 p-4 text-sm ring-1 ring-white/10">
+                  <div className="flex justify-between">
+                    <dt className="text-white/60">Abonnement</dt>
+                    <dd className="font-semibold">{fmt(calc.base, devise === 'USD' ? 2 : 0)} {devise}</dd>
                   </div>
-                  <div className="flex justify-between text-sm font-bold text-white pt-1 border-t border-slate-700">
-                    <span>Total :</span>
-                    <span className="text-blue-400">$ {totalAmountToPay.toFixed(2)}</span>
+                  <div className="flex justify-between">
+                    <dt className="text-white/60">Frais SasPay (2,5 %)</dt>
+                    <dd className="font-semibold">{fmt(calc.frais, devise === 'USD' ? 2 : 0)} {devise}</dd>
                   </div>
-                </div>
+                  <div className="flex justify-between border-t border-white/10 pt-2 text-base">
+                    <dt className="font-semibold">Total à payer</dt>
+                    <dd className="font-semibold text-[#60a5fa]">
+                      {fmt(calc.total, devise === 'USD' ? 2 : 0)} {devise}
+                    </dd>
+                  </div>
+                </dl>
 
-                <button
-                  type="submit"
-                  disabled={paymentLoading}
-                  className="w-full py-3 px-4 bg-[#2563EB] hover:bg-blue-600 text-white font-bold text-sm rounded-xl shadow-lg transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {paymentLoading ? 'Traitement...' : `Payer $ ${totalAmountToPay.toFixed(2)}`}
+                {payMsg && (
+                  <div role="status" className="mt-4 rounded-xl border border-[#60a5fa]/40 bg-[#2563EB]/15 px-4 py-3 text-sm text-blue-100">
+                    {payMsg}
+                  </div>
+                )}
+
+                <button onClick={payer} disabled={busy} className="ck-btn mt-5 w-full !py-3.5">
+                  {busy ? 'Un instant…' : `Payer ${fmt(calc.total, devise === 'USD' ? 2 : 0)} ${devise}`}
                 </button>
-              </form>
-            </div>
-          </div>
+              </div>
 
+              <div className="ck-card">
+                <h2 className="ck-title">Derniers paiements</h2>
+                <ul className="mt-3 divide-y divide-slate-100">
+                  {paiements.length === 0 && (
+                    <li className="py-5 text-center text-sm text-slate-400">Aucun paiement.</li>
+                  )}
+                  {paiements.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between py-3 text-sm">
+                      <div>
+                        <div className="font-semibold">
+                          {fmt(p.total, p.devise === 'USD' ? 2 : 0)} {p.devise}
+                        </div>
+                        <div className="text-xs text-slate-400">{dateFr(p.created_at)}</div>
+                      </div>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          p.statut === 'confirme'
+                            ? 'bg-emerald-50 text-emerald-600'
+                            : p.statut === 'echoue'
+                            ? 'bg-red-50 text-red-600'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {p.statut.replace('_', ' ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          )}
         </div>
-      </main>
-    </div>
+      </div>
+
+      {/* Notification */}
+      {toast && (
+        <div
+          role="status"
+          style={{ animation: 'aToast .3s ease-out both' }}
+          className={`fixed left-1/2 top-5 z-[130] max-w-[90vw] -translate-x-1/2 rounded-xl px-5 py-3 text-sm font-medium text-white shadow-2xl ${
+            toast.type === 'err' ? 'bg-red-600' : 'bg-[#0F172A]'
+          }`}
+        >
+          {toast.text}
+        </div>
+      )}
+    </main>
   );
 }
