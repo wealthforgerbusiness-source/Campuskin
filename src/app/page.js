@@ -1,259 +1,587 @@
+// src/app/page.js
 'use client';
 
-import React, { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as sb from '../lib/supabase';
 
-/**
- * Fonction de nettoyage et d'échappement des entrées textuelles (Prévention XSS)
- * Élimine tout risque d'injection en transformant les caractères spéciaux.
- */
-const sanitizeText = (str) => {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-};
+const supabase = sb.supabase || sb.default;
 
-const MAX_CHARS = 2500;
+/* ---------- Hooks utilitaires ---------- */
 
-export default function CampusKinDashboard() {
-  // États locaux avec typage implicite sécurisé
-  const [notes, setNotes] = useState([
-    {
-      id: 1,
-      title: 'Architecture Web Avancée',
-      content: 'Rappel sur les serveurs Node.js, les routes API sécurisées et la gestion des sessions JWT.',
-      date: "Aujourd'hui, 09:30"
-    },
-    {
-      id: 2,
-      title: 'Sécurité des Systèmes d\'Information',
-      content: 'Principes de défense en profondeur, hachage des mots de passe (bcrypt) et prévention des injections SQL.',
-      date: 'Hier, 14:15'
-    }
-  ]);
+function useReveal() {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        if (e.isIntersecting) {
+          setVisible(true);
+          io.disconnect();
+        }
+      },
+      { threshold: 0.15 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return [ref, visible];
+}
 
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const [error, setError] = useState(null);
-  const [successMessage, setSuccessMessage] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+function Reveal({ children, delay = 0, className = '' }) {
+  const [ref, visible] = useReveal();
+  return (
+    <div
+      ref={ref}
+      style={{ transitionDelay: `${delay}ms` }}
+      className={`transition-all duration-700 ease-out ${
+        visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
+      } ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
 
-  // Gestionnaire de soumission sécurisé
-  const handleAddSummary = (e) => {
-    e.preventDefault();
-    setError(null);
-    setSuccessMessage(null);
+function Typewriter({ words }) {
+  const [i, setI] = useState(0);
+  const [txt, setTxt] = useState('');
+  const [del, setDel] = useState(false);
+  useEffect(() => {
+    const w = words[i % words.length];
+    const t = setTimeout(
+      () => {
+        if (!del) {
+          setTxt(w.slice(0, txt.length + 1));
+          if (txt.length + 1 === w.length) setTimeout(() => setDel(true), 1400);
+        } else {
+          setTxt(w.slice(0, txt.length - 1));
+          if (txt.length - 1 === 0) {
+            setDel(false);
+            setI((v) => v + 1);
+          }
+        }
+      },
+      del ? 40 : 85
+    );
+    return () => clearTimeout(t);
+  }, [txt, del, i, words]);
+  return (
+    <span className="text-[#2563EB]">
+      {txt}
+      <span className="ml-1 inline-block w-[3px] h-[0.9em] align-middle bg-[#2563EB] animate-caret" />
+    </span>
+  );
+}
 
-    // 1. Vérification de type stricte
-    if (typeof newTitle !== 'string' || typeof newContent !== 'string') {
-      setError('Erreur système : Format de données invalide.');
-      return;
-    }
+function CountUp({ value, decimals = 0, duration = 900 }) {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let raf;
+    const start = performance.now();
+    const from = 0;
+    const tick = (t) => {
+      const p = Math.min((t - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setN(from + (value - from) * eased);
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{n.toLocaleString('fr-FR', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</>;
+}
 
-    const trimmedTitle = newTitle.trim();
-    const trimmedContent = newContent.trim();
+/* Carte avec effet tilt 3D au toucher / survol */
+function TiltCard({ children, className = '' }) {
+  const ref = useRef(null);
+  const move = (e) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width - 0.5) * 8;
+    const y = ((e.clientY - r.top) / r.height - 0.5) * -8;
+    el.style.transform = `perspective(900px) rotateX(${y}deg) rotateY(${x}deg) translateY(-2px)`;
+  };
+  const leave = () => {
+    if (ref.current) ref.current.style.transform = '';
+  };
+  return (
+    <div
+      ref={ref}
+      onPointerMove={move}
+      onPointerLeave={leave}
+      onPointerUp={leave}
+      className={`transition-transform duration-200 will-change-transform ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
 
-    // 2. Validation des champs vides
-    if (!trimmedTitle || !trimmedContent) {
-      setError('Veuillez remplir tous les champs obligatoires.');
-      return;
-    }
+/* ---------- Page ---------- */
 
-    // 3. Contrôle strict de la limite de caractères
-    if (trimmedContent.length > MAX_CHARS) {
-      setError(`Le résumé dépasse la limite autorisée de ${MAX_CHARS} caractères.`);
-      return;
-    }
+const fmt = (n, d = 0) =>
+  Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
 
-    setIsLoading(true);
+export default function Dashboard() {
+  /* Convertisseur */
+  const [rate, setRate] = useState(2800);
+  const [amount, setAmount] = useState('100');
+  const [dir, setDir] = useState('USD'); // devise saisie
 
+  /* Budget */
+  const [budget, setBudget] = useState(200); // en USD
+  const [expenses, setExpenses] = useState([]);
+  const [label, setLabel] = useState('');
+  const [exp, setExp] = useState('');
+  const [expCur, setExpCur] = useState('USD');
+
+  /* Données */
+  const [alerts, setAlerts] = useState([]);
+  const [loadingAlerts, setLoadingAlerts] = useState(true);
+  const [notes, setNotes] = useState([]);
+  const [ready, setReady] = useState(false);
+
+  /* Chargement local */
+  useEffect(() => {
     try {
-      // 4. Sanctuarisation des données avant l'enregistrement dans l'état (ou la base de données)
-      const secureNote = {
-        id: Date.now(),
-        title: sanitizeText(trimmedTitle),
-        content: sanitizeText(trimmedContent),
-        date: "À l'instant"
-      };
+      const r = localStorage.getItem('ck_rate');
+      const b = localStorage.getItem('ck_budget');
+      const e = localStorage.getItem('ck_expenses');
+      if (r) setRate(Number(r));
+      if (b) setBudget(Number(b));
+      if (e) setExpenses(JSON.parse(e));
 
-      setNotes([secureNote, ...notes]);
-      setNewTitle('');
-      setNewContent('');
-      setSuccessMessage('Résumé enregistré et sécurisé avec succès !');
-    } catch (err) {
-      // 5. Gestion des erreurs fail-safe sans fuite de stack trace
-      setError("Une erreur inattendue est survenue lors de l'enregistrement. Veuillez réessayer.");
-    } finally {
-      setIsLoading(false);
-    }
+      const raw = localStorage.getItem('campuskin_notes');
+      if (raw) {
+        const obj = JSON.parse(raw);
+        const list = Array.isArray(obj)
+          ? obj
+          : Object.entries(obj).map(([matiere, texte]) => ({ matiere, texte }));
+        setNotes(list.filter((n) => n.texte).slice(0, 3));
+      }
+    } catch {}
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      localStorage.setItem('ck_rate', String(rate));
+      localStorage.setItem('ck_budget', String(budget));
+      localStorage.setItem('ck_expenses', JSON.stringify(expenses));
+    } catch {}
+  }, [rate, budget, expenses, ready]);
+
+  /* Alertes Supabase (table "annonces" : titre, contenu, urgent, created_at) */
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!supabase) throw new Error('no client');
+        const { data, error } = await supabase
+          .from('annonces')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(3);
+        if (error) throw error;
+        setAlerts(data || []);
+      } catch {
+        setAlerts([]);
+      } finally {
+        setLoadingAlerts(false);
+      }
+    })();
+  }, []);
+
+  /* Calculs */
+  const converted = useMemo(() => {
+    const a = parseFloat(String(amount).replace(',', '.')) || 0;
+    return dir === 'USD' ? a * rate : a / rate;
+  }, [amount, rate, dir]);
+
+  const spentUSD = useMemo(
+    () => expenses.reduce((s, x) => s + (x.cur === 'USD' ? x.amount : x.amount / rate), 0),
+    [expenses, rate]
+  );
+  const pct = Math.min((spentUSD / (budget || 1)) * 100, 100);
+  const left = budget - spentUSD;
+  const danger = pct >= 85;
+
+  const addExpense = (e) => {
+    e.preventDefault();
+    const v = parseFloat(String(exp).replace(',', '.'));
+    if (!label.trim() || !v || v <= 0) return;
+    setExpenses((p) => [{ id: Date.now(), label: label.trim(), amount: v, cur: expCur }, ...p].slice(0, 30));
+    setLabel('');
+    setExp('');
   };
 
+  const hour = new Date().getHours();
+  const hello = hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir';
+
   return (
-    <div className="min-h-screen bg-white text-[#0F172A] font-sans antialiased selection:bg-[#2563EB] selection:text-white">
-      {/* Barre de Navigation Supérieure */}
-      <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center text-white font-bold text-xl shadow-md shadow-blue-500/20">
-              CK
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight text-[#0F172A]">CampusKin</h1>
-              <span className="text-xs text-slate-500 font-medium">Tableau de Bord Étudiant</span>
-            </div>
+    <main className="relative min-h-screen bg-white text-[#0F172A] pb-32 overflow-x-hidden">
+      {/* Animations intégrées */}
+      <style>{`
+        @keyframes caret { 0%,50%{opacity:1} 51%,100%{opacity:0} }
+        @keyframes floaty { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-14px)} }
+        @keyframes pulseRing { 0%{box-shadow:0 0 0 0 rgba(37,99,235,.45)} 100%{box-shadow:0 0 0 14px rgba(37,99,235,0)} }
+        @keyframes slideUp { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes gradientMove { 0%{background-position:0% 50%} 100%{background-position:200% 50%} }
+        @keyframes shimmer { 0%{background-position:-400px 0} 100%{background-position:400px 0} }
+        .animate-caret{animation:caret 1s steps(1) infinite}
+        .animate-floaty{animation:floaty 7s ease-in-out infinite}
+        .animate-ring{animation:pulseRing 1.8s ease-out infinite}
+        .hero-line{opacity:0;animation:slideUp .9s cubic-bezier(.2,.7,.2,1) forwards}
+        .text-shine{background:linear-gradient(90deg,#fff,#93c5fd,#fff,#93c5fd);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:gradientMove 6s linear infinite}
+        .skeleton{background:linear-gradient(90deg,#eef2ff 25%,#dbe5ff 50%,#eef2ff 75%);background-size:800px 100%;animation:shimmer 1.4s infinite linear}
+        .glass{background:rgba(255,255,255,.08);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.14)}
+        .btn-press{transition:transform .15s ease, box-shadow .2s ease}
+        .btn-press:active{transform:scale(.96)}
+        input,select{font-size:16px}
+        @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+      `}</style>
+
+      {/* ============ HERO ============ */}
+      <section className="relative isolate overflow-hidden bg-[#0F172A] text-white">
+        {/* Décor */}
+        <div className="absolute inset-0 -z-10">
+          <div className="absolute -top-32 -right-24 h-[420px] w-[420px] rounded-full bg-[#2563EB]/40 blur-[110px] animate-floaty" />
+          <div
+            className="absolute bottom-[-140px] -left-20 h-[360px] w-[360px] rounded-full bg-[#1d4ed8]/30 blur-[100px] animate-floaty"
+            style={{ animationDelay: '-3s' }}
+          />
+          <div
+            className="absolute inset-0 opacity-[0.07]"
+            style={{
+              backgroundImage:
+                'linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px)',
+              backgroundSize: '44px 44px',
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#0F172A]/40 to-[#0F172A]" />
+        </div>
+
+        <div className="mx-auto max-w-5xl px-5 pt-14 pb-24 sm:pt-20 sm:pb-28">
+          <p
+            className="hero-line text-[11px] sm:text-xs tracking-[0.35em] uppercase text-white/60"
+            style={{ animationDelay: '0.1s' }}
+          >
+            CampusKin · Kinshasa
+          </p>
+
+          <h1
+            className="hero-line mt-4 text-[2.4rem] leading-[1.05] sm:text-6xl font-light uppercase tracking-tight"
+            style={{ animationDelay: '0.3s' }}
+          >
+            {hello}, <span className="text-shine font-semibold">étudiant.</span>
+            <br />
+            Ta promo, <Typewriter words={['tes notes.', 'ton budget.', 'tes groupes.', 'ta réussite.']} />
+          </h1>
+
+          <p
+            className="hero-line mt-6 max-w-xl text-sm sm:text-base uppercase tracking-wide text-white/75"
+            style={{ animationDelay: '0.55s' }}
+          >
+            Tout ton quotidien universitaire au même endroit, simple, rapide et utilisable même hors-ligne.
+          </p>
+
+          <div className="hero-line mt-9 flex flex-wrap gap-3" style={{ animationDelay: '0.8s' }}>
+            <a
+              href="/notes"
+              className="btn-press border border-white/80 px-6 py-3 text-sm font-medium tracking-wide hover:bg-white hover:text-[#0F172A] transition-colors"
+            >
+              Mes notes
+            </a>
+            <a
+              href="/groupes"
+              className="btn-press bg-[#2563EB] px-6 py-3 text-sm font-medium tracking-wide shadow-[0_10px_30px_-8px_rgba(37,99,235,.8)] hover:bg-[#1d4ed8] transition-colors"
+            >
+              Ma promotion
+            </a>
           </div>
-          <div className="flex items-center space-x-3">
-            <span className="hidden sm:inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-[#2563EB]">
-              Promotion L3 GL
-            </span>
-            <div className="w-9 h-9 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center font-bold text-[#2563EB] text-sm">
-              ET
-            </div>
+
+          {/* Chiffres clés */}
+          <div className="hero-line mt-12 grid grid-cols-3 gap-3 max-w-lg" style={{ animationDelay: '1s' }}>
+            {[
+              { k: 'Taux', v: <CountUp value={rate} /> , s: 'CDF / USD' },
+              { k: 'Budget', v: <CountUp value={Math.max(left, 0)} decimals={0} />, s: 'USD restants' },
+              { k: 'Notes', v: <CountUp value={notes.length} />, s: 'récentes' },
+            ].map((c) => (
+              <div key={c.k} className="glass rounded-xl px-3 py-3">
+                <div className="text-[10px] uppercase tracking-widest text-white/50">{c.k}</div>
+                <div className="mt-1 text-xl sm:text-2xl font-semibold">{c.v}</div>
+                <div className="text-[10px] text-white/50">{c.s}</div>
+              </div>
+            ))}
           </div>
         </div>
-      </header>
+      </section>
 
-      {/* Contenu Principal */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        
-        {/* Section supérieure : Statistiques & Widgets Budget */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          
-          {/* Widget Budget USD */}
-          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50 relative overflow-hidden transition-all duration-300 hover:shadow-2xl hover:border-blue-100 group">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-full blur-2xl -mr-6 -mt-6 group-hover:bg-blue-100 transition-colors"></div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Solde Compte (USD)</p>
-            <h3 className="text-3xl font-extrabold text-[#0F172A] mt-2">$ 145.50</h3>
-            <div className="mt-4 flex items-center text-xs text-emerald-600 font-medium">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-2"></span>
-              Mis à jour aujourd'hui
-            </div>
-          </div>
-
-          {/* Widget Budget CDF */}
-          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50 relative overflow-hidden transition-all duration-300 hover:shadow-2xl hover:border-blue-100 group">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-full blur-2xl -mr-6 -mt-6 group-hover:bg-blue-100 transition-colors"></div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Solde Compte (CDF)</p>
-            <h3 className="text-3xl font-extrabold text-[#0F172A] mt-2">CDF 395,000</h3>
-            <div className="mt-4 flex items-center text-xs text-blue-600 font-medium">
-              <span className="inline-block w-2 h-2 rounded-full bg-[#2563EB] mr-2"></span>
-              Taux indicatif bancaire
-            </div>
-          </div>
-
-          {/* Widget Alertes TP / Échéances */}
-          <div className="bg-[#0F172A] text-white rounded-2xl p-6 shadow-xl relative overflow-hidden transition-all duration-300">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-[#2563EB]/20 rounded-full blur-3xl -mr-10 -mt-10"></div>
+      {/* ============ CONTENU ============ */}
+      <section className="relative z-10 mx-auto -mt-10 max-w-5xl px-4 sm:px-5 space-y-6">
+        {/* Alertes prioritaires */}
+        <Reveal>
+          <div className="rounded-2xl bg-white p-5 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-blue-300">Alerte Promotion</p>
-              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-500 text-white animate-pulse">Urgent</span>
+              <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-widest">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-[#2563EB] animate-ring" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#2563EB]" />
+                </span>
+                Alertes de la promotion
+              </h2>
+              <a href="/groupes" className="text-xs font-medium text-[#2563EB] hover:underline">
+                Tout voir →
+              </a>
             </div>
-            <h4 className="text-lg font-bold mt-2">TP Architecture Web</h4>
-            <p className="text-xs text-slate-300 mt-1">Date limite de soumission : Vendredi à 23h59</p>
-          </div>
-        </div>
 
-        {/* Grille principale : Formulaire d'ajout sécurisé & Liste des résumés */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Formulaire d'ajout de résumé (Sécurisé & Limité) */}
-          <div className="lg:col-span-1 bg-white rounded-2xl p-6 border border-slate-100 shadow-xl shadow-slate-100/50">
-            <h2 className="text-lg font-bold text-[#0F172A] mb-1">Nouveau Résumé</h2>
-            <p className="text-xs text-slate-500 mb-6">Ajoutez et sécurisez vos notes de cours instantanément.</p>
+            <div className="mt-4 space-y-3">
+              {loadingAlerts &&
+                [0, 1].map((i) => <div key={i} className="skeleton h-14 rounded-xl" />)}
 
-            {error && (
-              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl font-medium animate-fadeIn">
-                {error}
-              </div>
-            )}
-
-            {successMessage && (
-              <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl font-medium animate-fadeIn">
-                {successMessage}
-              </div>
-            )}
-
-            <form onSubmit={handleAddSummary} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Titre du cours / sujet</label>
-                <input
-                  type="text"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="Ex: Réseaux Avancés"
-                  maxLength={100}
-                  required
-                  className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] focus:bg-white transition-all text-[#0F172A]"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-xs font-semibold text-slate-700">Résumé textuel</label>
-                  <span className={`text-[11px] font-medium ${newContent.length > MAX_CHARS * 0.9 ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>
-                    {newContent.length} / {MAX_CHARS}
-                  </span>
+              {!loadingAlerts && alerts.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-300 p-5 text-center text-sm text-slate-500">
+                  Aucune annonce pour le moment. Le délégué n'a rien publié.
                 </div>
-                <textarea
-                  value={newContent}
-                  onChange={(e) => setNewContent(e.target.value)}
-                  placeholder="Saisissez les points clés..."
-                  rows={5}
-                  maxLength={MAX_CHARS}
-                  required
-                  className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB] focus:bg-white transition-all text-[#0F172A] resize-none"
-                />
-              </div>
+              )}
 
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-3 px-4 bg-[#2563EB] hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-500/25 transition-all duration-200 disabled:opacity-50 flex items-center justify-center space-x-2 cursor-pointer"
-              >
-                {isLoading ? (
-                  <span>Traitement sécurisé...</span>
-                ) : (
-                  <span>Enregistrer le résumé</span>
-                )}
-              </button>
-            </form>
-          </div>
-
-          {/* Liste des résumés de cours */}
-          <div className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[#0F172A]">Résumés de Cours Récents</h2>
-              <span className="text-xs text-slate-500 font-medium">{notes.length} éléments sauvegardés</span>
-            </div>
-
-            <div className="space-y-3">
-              {notes.map((note) => (
-                <div
-                  key={note.id}
-                  className="bg-white rounded-2xl p-5 border border-slate-100 shadow-lg shadow-slate-100/50 hover:border-blue-200 transition-all duration-200 group"
-                >
-                  <div className="flex items-start justify-between">
-                    <h3 className="text-base font-bold text-[#0F172A] group-hover:text-[#2563EB] transition-colors">
-                      {note.title}
-                    </h3>
-                    <span className="text-[11px] font-medium text-slate-400 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100">
-                      {note.date}
-                    </span>
+              {alerts.map((a, i) => (
+                <TiltCard key={a.id ?? i}>
+                  <div
+                    className="rounded-xl border-l-4 border-[#2563EB] bg-[#2563EB]/5 p-4"
+                    style={{ animation: `slideUp .6s ${i * 0.1}s both` }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <h3 className="font-semibold leading-snug">{a.titre || 'Annonce'}</h3>
+                      {a.urgent && (
+                        <span className="shrink-0 rounded-full bg-[#0F172A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                          Urgent
+                        </span>
+                      )}
+                    </div>
+                    {a.contenu && <p className="mt-1 text-sm text-slate-600 line-clamp-2">{a.contenu}</p>}
+                    {a.created_at && (
+                      <p className="mt-2 text-[11px] uppercase tracking-wider text-slate-400">
+                        {new Date(a.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}
+                      </p>
+                    )}
                   </div>
-                  {/* Affichage sécurisé sans dangerouslySetInnerHTML */}
-                  <p className="text-sm text-slate-600 mt-3 leading-relaxed whitespace-pre-wrap">
-                    {note.content}
-                  </p>
-                </div>
+                </TiltCard>
               ))}
             </div>
           </div>
+        </Reveal>
 
+        <div className="grid gap-6 md:grid-cols-2">
+          {/* Convertisseur */}
+          <Reveal delay={80}>
+            <TiltCard className="h-full">
+              <div className="h-full rounded-2xl bg-[#0F172A] p-5 text-white shadow-xl">
+                <h2 className="text-sm font-semibold uppercase tracking-widest text-white/70">
+                  Convertisseur CDF ⇄ USD
+                </h2>
+
+                <div className="mt-4 flex gap-2">
+                  <input
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="min-w-0 flex-1 rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-lg font-semibold outline-none transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/40"
+                    placeholder="Montant"
+                  />
+                  <button
+                    onClick={() => setDir((d) => (d === 'USD' ? 'CDF' : 'USD'))}
+                    className="btn-press rounded-xl bg-[#2563EB] px-4 text-sm font-semibold hover:bg-[#1d4ed8]"
+                    aria-label="Inverser"
+                  >
+                    {dir} ⇄
+                  </button>
+                </div>
+
+                <div className="mt-5 rounded-xl bg-white/5 p-4 ring-1 ring-white/10">
+                  <div className="text-[11px] uppercase tracking-widest text-white/50">
+                    Équivaut à
+                  </div>
+                  <div className="mt-1 text-3xl font-semibold tracking-tight">
+                    <CountUp
+                      key={`${dir}-${amount}-${rate}`}
+                      value={converted}
+                      decimals={dir === 'USD' ? 0 : 2}
+                      duration={500}
+                    />{' '}
+                    <span className="text-lg text-[#60a5fa]">{dir === 'USD' ? 'CDF' : 'USD'}</span>
+                  </div>
+                </div>
+
+                <label className="mt-4 block text-[11px] uppercase tracking-widest text-white/50">
+                  Taux du jour (1 USD = … CDF)
+                  <input
+                    inputMode="numeric"
+                    value={rate}
+                    onChange={(e) => setRate(Number(e.target.value.replace(/\D/g, '')) || 0)}
+                    className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-base normal-case tracking-normal outline-none focus:border-[#2563EB]"
+                  />
+                </label>
+              </div>
+            </TiltCard>
+          </Reveal>
+
+          {/* Budget */}
+          <Reveal delay={160}>
+            <TiltCard className="h-full">
+              <div className="h-full rounded-2xl bg-white p-5 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold uppercase tracking-widest">Suivi du budget</h2>
+                  <label className="flex items-center gap-1 text-xs text-slate-500">
+                    Budget $
+                    <input
+                      inputMode="numeric"
+                      value={budget}
+                      onChange={(e) => setBudget(Number(e.target.value.replace(/\D/g, '')) || 0)}
+                      className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-right font-semibold text-[#0F172A] outline-none focus:border-[#2563EB]"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-4">
+                  <div className="flex items-end justify-between">
+                    <div className="text-3xl font-semibold tracking-tight">
+                      <CountUp value={Math.max(left, 0)} decimals={2} duration={600} />{' '}
+                      <span className="text-base text-slate-400">$ restants</span>
+                    </div>
+                    <div className={`text-sm font-semibold ${danger ? 'text-red-600' : 'text-[#2563EB]'}`}>
+                      {fmt(pct)}%
+                    </div>
+                  </div>
+                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ease-out ${
+                        danger ? 'bg-red-500' : 'bg-gradient-to-r from-[#2563EB] to-[#60a5fa]'
+                      }`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Dépensé : {fmt(spentUSD, 2)} $ ≈ {fmt(spentUSD * rate)} CDF
+                  </p>
+                </div>
+
+                <form onSubmit={addExpense} className="mt-4 flex flex-wrap gap-2">
+                  <input
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="Dépense (ex : transport)"
+                    className="min-w-0 flex-1 basis-32 rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/20"
+                  />
+                  <input
+                    inputMode="decimal"
+                    value={exp}
+                    onChange={(e) => setExp(e.target.value)}
+                    placeholder="0"
+                    className="w-20 rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/20"
+                  />
+                  <select
+                    value={expCur}
+                    onChange={(e) => setExpCur(e.target.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-2 py-2.5 outline-none focus:border-[#2563EB]"
+                  >
+                    <option>USD</option>
+                    <option>CDF</option>
+                  </select>
+                  <button className="btn-press rounded-xl bg-[#0F172A] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#2563EB] transition-colors">
+                    Ajouter
+                  </button>
+                </form>
+
+                <ul className="mt-4 max-h-40 space-y-2 overflow-auto pr-1">
+                  {expenses.length === 0 && (
+                    <li className="text-sm text-slate-400">Aucune dépense enregistrée.</li>
+                  )}
+                  {expenses.slice(0, 6).map((x) => (
+                    <li
+                      key={x.id}
+                      className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                      style={{ animation: 'slideUp .4s both' }}
+                    >
+                      <span className="truncate">{x.label}</span>
+                      <span className="ml-3 flex items-center gap-3 font-semibold">
+                        {fmt(x.amount, x.cur === 'USD' ? 2 : 0)} {x.cur}
+                        <button
+                          onClick={() => setExpenses((p) => p.filter((e) => e.id !== x.id))}
+                          className="text-slate-300 hover:text-red-500"
+                          aria-label="Supprimer"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </TiltCard>
+          </Reveal>
         </div>
-      </main>
-    </div>
+
+        {/* Notes récentes */}
+        <Reveal delay={120}>
+          <div className="rounded-2xl bg-white p-5 shadow-[0_20px_50px_-20px_rgba(15,23,42,.35)] ring-1 ring-slate-200">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-widest">Notes récentes</h2>
+              <a href="/notes" className="text-xs font-medium text-[#2563EB] hover:underline">
+                Ouvrir →
+              </a>
+            </div>
+
+            {notes.length === 0 ? (
+              <a
+                href="/notes"
+                className="btn-press mt-4 block rounded-xl border border-dashed border-[#2563EB]/40 bg-[#2563EB]/5 p-6 text-center text-sm font-medium text-[#2563EB] hover:bg-[#2563EB]/10"
+              >
+                + Rédige ton premier résumé de cours
+              </a>
+            ) : (
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                {notes.map((n, i) => (
+                  <TiltCard key={i}>
+                    <a
+                      href="/notes"
+                      className="block h-full rounded-xl bg-gradient-to-br from-[#0F172A] to-[#1e3a8a] p-4 text-white"
+                    >
+                      <div className="text-[10px] uppercase tracking-widest text-[#93c5fd]">
+                        {n.matiere || 'Matière'}
+                      </div>
+                      <p className="mt-2 text-sm text-white/80 line-clamp-4">{n.texte}</p>
+                    </a>
+                  </TiltCard>
+                ))}
+              </div>
+            )}
+          </div>
+        </Reveal>
+
+        {/* Accès rapide */}
+        <Reveal>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { t: 'Notes', h: '/notes', i: '✎' },
+              { t: 'Groupes', h: '/groupes', i: '◎' },
+              { t: 'Admin', h: '/admin', i: '⚙' },
+            ].map((q) => (
+              <a
+                key={q.t}
+                href={q.h}
+                className="btn-press group flex flex-col items-center gap-1 rounded-2xl bg-white py-4 text-sm font-semibold ring-1 ring-slate-200 transition hover:-translate-y-1 hover:bg-[#2563EB] hover:text-white hover:shadow-lg"
+              >
+                <span className="text-2xl text-[#2563EB] transition group-hover:text-white">{q.i}</span>
+                {q.t}
+              </a>
+            ))}
+          </div>
+        </Reveal>
+      </section>
+    </main>
   );
 }
