@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabase';
 import Welcome from './Welcome';
+import LogoutButton from './LogoutButton';
 
 function Splash() {
   return (
@@ -41,6 +42,13 @@ export default function AppGate({ children, nav }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Service worker (mode hors ligne), uniquement en production
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
+
   const { ready, seen, session } = state;
   const onLoginPage = pathname.startsWith('/login');
 
@@ -74,6 +82,7 @@ export default function AppGate({ children, nav }) {
   return (
     <>
       {children}
+      {session && !session.local && <LogoutButton />}
       {nav}
     </>
   );
