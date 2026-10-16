@@ -4,8 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabase';
 
-const FEE = 0.025; // 2,5 % de frais SasPay
-
 const TABS = [
   { id: 'apercu', label: 'Aperçu' },
   { id: 'annonces', label: 'Annonces' },
@@ -44,9 +42,10 @@ export default function AdminPage() {
   const [search, setSearch] = useState('');
 
   /* Paiement */
-  const [montant, setMontant] = useState('10');
   const [devise, setDevise] = useState('USD');
-  const [tel, setTel] = useState('');
+  const [prix, setPrix] = useState(null); // { USD, CDF, duree_jours } — fixé par le serveur
+  const [abo, setAbo] = useState(null); // abonnement actif de la promotion
+  const [retour, setRetour] = useState(''); // '' | verif | ok | echec | delai
   const [payMsg, setPayMsg] = useState('');
 
   const notify = (text, type = 'ok') => {
@@ -82,11 +81,24 @@ export default function AdminPage() {
   /* ---------- Chargement des données ---------- */
   const load = useCallback(async () => {
     setDbError('');
-    const [a, q, p, pay] = await Promise.all([
+    const [a, q, p, pay, ab, pr] = await Promise.all([
       supabase.from('annonces').select('*').order('created_at', { ascending: false }),
       supabase.from('questions').select('*').order('created_at', { ascending: false }),
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-      supabase.from('paiements').select('*').order('created_at', { ascending: false }).limit(20),
+      supabase.from('profiles').select('id, nom, email, promotion, role, created_at').order('created_at', { ascending: false }),
+      supabase
+        .from('paiements')
+        .select('id, devise, montant, statut, created_at, confirme_at, anomalie')
+        .order('created_at', { ascending: false })
+        .limit(20),
+      supabase
+        .from('abonnements')
+        .select('expire_le')
+        .gt('expire_le', new Date().toISOString())
+        .order('expire_le', { ascending: false })
+        .limit(1),
+      fetch('/api/saspay/prix', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
     ]);
     const err = [a, q, p, pay].find((r) => r.error);
     if (err) setDbError(`Erreur Supabase : ${err.error.message}. As-tu exécuté tout le SQL ?`);
@@ -94,6 +106,8 @@ export default function AdminPage() {
     setQuestions(q.data || []);
     setProfils(p.data || []);
     setPaiements(pay.data || []);
+    setAbo(ab && ab.data && ab.data[0] ? ab.data[0] : null);
+    setPrix(pr);
   }, []);
 
   useEffect(() => {
@@ -142,59 +156,73 @@ export default function AdminPage() {
     load();
   };
 
-  /* ---------- Paiement SasPay ---------- */
-  const calc = useMemo(() => {
-    const base = parseFloat(String(montant).replace(',', '.')) || 0;
-    const frais =
-      devise === 'USD'
-        ? Math.ceil(base * FEE * 100 - 1e-9) / 100
-        : Math.ceil(base * FEE - 1e-9);
-    return { base, frais, total: base + frais };
-  }, [montant, devise]);
+  /* ---------- Paiement SasPay : le prix et les frais sont gérés par le serveur / SasPay ---------- */
+  const prixCourant = prix ? prix[devise] : null;
 
   const payer = async () => {
     setPayMsg('');
-    if (calc.base <= 0) return setPayMsg('Entre un montant valide.');
+    if (!prixCourant) return setPayMsg('Prix indisponible. Réessaie plus tard.');
     setBusy(true);
     try {
-      const { data: row, error } = await supabase
-        .from('paiements')
-        .insert({
-          user_id: me.id,
-          montant: calc.base,
-          frais: calc.frais,
-          total: calc.total,
-          devise,
-          telephone: tel.trim() || null,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-
+      const { data: sess } = await supabase.auth.getSession();
+      const jeton = sess?.session?.access_token;
+      if (!jeton) throw new Error('Session expirée. Reconnecte-toi.');
       const res = await fetch('/api/saspay/initier', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ paiement_id: row.id }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jeton}` },
+        body: JSON.stringify({ devise }), // seule la devise est envoyée : jamais le montant
       });
-
-      if (res.status === 404) {
-        setPayMsg("La passerelle SasPay n'est pas encore branchée côté serveur. Le paiement est enregistré « en attente ».");
-      } else {
-        const out = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(out.error || 'Échec SasPay.');
-        if (out.url) {
-          window.location.href = out.url;
-          return;
-        }
-        notify('Paiement initié.');
-      }
-      load();
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.url) throw new Error(out.error || 'Paiement impossible pour le moment.');
+      try {
+        sessionStorage.setItem('ck_pay_id', out.paiement_id || '');
+      } catch {}
+      window.location.href = out.url;
     } catch (err) {
       setPayMsg(err.message || 'Erreur de paiement.');
-    } finally {
       setBusy(false);
     }
   };
+
+  /* Retour de SasPay : la redirection n'est PAS une preuve, on attend le webhook (3 s x 20) */
+  useEffect(() => {
+    if (phase !== 'ok') return undefined;
+    if (new URLSearchParams(window.location.search).get('paiement') !== 'retour') return undefined;
+    setTab('paiement');
+    setRetour('verif');
+    let id = '';
+    try {
+      id = sessionStorage.getItem('ck_pay_id') || '';
+    } catch {}
+    let essais = 0;
+    let stop = false;
+    let timer = null;
+    const tick = async () => {
+      if (stop) return;
+      essais += 1;
+      let q = supabase.from('paiements').select('id, statut').order('created_at', { ascending: false }).limit(1);
+      if (id) q = supabase.from('paiements').select('id, statut').eq('id', id).limit(1);
+      const { data } = await q;
+      const st = data && data[0] ? data[0].statut : null;
+      if (st === 'confirme') {
+        setRetour('ok');
+        load();
+        return;
+      }
+      if (st === 'echoue') {
+        setRetour('echec');
+        load();
+        return;
+      }
+      if (essais >= 20) return setRetour('delai');
+      timer = setTimeout(tick, 3000);
+    };
+    tick();
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [phase, load]);
 
   /* ---------- Statistiques ---------- */
   const sansReponse = questions.filter((q) => !q.reponse).length;
@@ -482,43 +510,30 @@ export default function AdminPage() {
                   ))}
                 </div>
 
-                <label className="mt-4 block text-[11px] uppercase tracking-widest text-white/50">
-                  Montant de l'abonnement ({devise})
-                  <input
-                    inputMode="decimal"
-                    value={montant}
-                    onChange={(e) => setMontant(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-xl font-semibold normal-case tracking-normal outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/40"
-                  />
-                </label>
+                <div className="mt-5 rounded-xl bg-white/5 p-4 ring-1 ring-white/10">
+                  <p className="text-[11px] uppercase tracking-widest text-white/50">Abonnement de la promotion</p>
+                  <p className="mt-1 text-3xl font-extrabold">
+                    {prixCourant ? `${fmt(prixCourant, devise === 'USD' ? 2 : 0)} ${devise}` : '—'}
+                  </p>
+                  <p className="mt-1 text-xs text-white/60">
+                    {prix && prix.duree_jours ? `Valable ${prix.duree_jours} jours. ` : ''}
+                    Le montant exact à payer est confirmé par SasPay avant le paiement.
+                  </p>
+                  {abo && (
+                    <p className="mt-3 text-sm text-emerald-300">
+                      Abonnement actif jusqu'au {new Date(abo.expire_le).toLocaleDateString('fr-FR')}
+                    </p>
+                  )}
+                </div>
 
-                <label className="mt-3 block text-[11px] uppercase tracking-widest text-white/50">
-                  Numéro Mobile Money (si demandé)
-                  <input
-                    inputMode="tel"
-                    value={tel}
-                    onChange={(e) => setTel(e.target.value)}
-                    placeholder="+243…"
-                    className="mt-1 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 normal-case tracking-normal outline-none placeholder:text-white/30 focus:border-[#2563EB]"
-                  />
-                </label>
-
-                <dl className="mt-5 space-y-2 rounded-xl bg-white/5 p-4 text-sm ring-1 ring-white/10">
-                  <div className="flex justify-between">
-                    <dt className="text-white/60">Abonnement</dt>
-                    <dd className="font-semibold">{fmt(calc.base, devise === 'USD' ? 2 : 0)} {devise}</dd>
+                {retour && (
+                  <div role="status" className="mt-4 rounded-xl border border-[#60a5fa]/40 bg-[#2563EB]/15 px-4 py-3 text-sm text-blue-100">
+                    {retour === 'verif' && 'Vérification du paiement…'}
+                    {retour === 'ok' && 'Paiement confirmé. Ta promotion est activée.'}
+                    {retour === 'echec' && "Le paiement a échoué ou a été annulé. Tu peux réessayer."}
+                    {retour === 'delai' && "Toujours en attente de confirmation. Si tu as été débité, ça s'activera automatiquement : ne repaie pas, recharge la page dans quelques minutes."}
                   </div>
-                  <div className="flex justify-between">
-                    <dt className="text-white/60">Frais SasPay (2,5 %)</dt>
-                    <dd className="font-semibold">{fmt(calc.frais, devise === 'USD' ? 2 : 0)} {devise}</dd>
-                  </div>
-                  <div className="flex justify-between border-t border-white/10 pt-2 text-base">
-                    <dt className="font-semibold">Total à payer</dt>
-                    <dd className="font-semibold text-[#60a5fa]">
-                      {fmt(calc.total, devise === 'USD' ? 2 : 0)} {devise}
-                    </dd>
-                  </div>
-                </dl>
+                )}
 
                 {payMsg && (
                   <div role="status" className="mt-4 rounded-xl border border-[#60a5fa]/40 bg-[#2563EB]/15 px-4 py-3 text-sm text-blue-100">
@@ -526,8 +541,12 @@ export default function AdminPage() {
                   </div>
                 )}
 
-                <button onClick={payer} disabled={busy} className="ck-btn mt-5 w-full !py-3.5">
-                  {busy ? 'Un instant…' : `Payer ${fmt(calc.total, devise === 'USD' ? 2 : 0)} ${devise}`}
+                <button onClick={payer} disabled={busy || !prixCourant} className="ck-btn mt-5 w-full !py-3.5">
+                  {busy
+                    ? 'Redirection…'
+                    : prixCourant
+                    ? `Payer ${fmt(prixCourant, devise === 'USD' ? 2 : 0)} ${devise}`
+                    : 'Prix indisponible'}
                 </button>
               </div>
 
@@ -541,9 +560,12 @@ export default function AdminPage() {
                     <li key={p.id} className="flex items-center justify-between py-3 text-sm">
                       <div>
                         <div className="font-semibold">
-                          {fmt(p.total, p.devise === 'USD' ? 2 : 0)} {p.devise}
+                          {fmt(p.montant, p.devise === 'USD' ? 2 : 0)} {p.devise}
                         </div>
-                        <div className="text-xs text-slate-400">{dateFr(p.created_at)}</div>
+                        <div className="text-xs text-slate-400">
+                          {dateFr(p.created_at)}
+                          {p.anomalie ? ' · à vérifier' : ''}
+                        </div>
                       </div>
                       <span
                         className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
@@ -554,7 +576,7 @@ export default function AdminPage() {
                             : 'bg-slate-100 text-slate-500'
                         }`}
                       >
-                        {p.statut.replace('_', ' ')}
+                        {String(p.statut || '').replace('_', ' ')}
                       </span>
                     </li>
                   ))}
