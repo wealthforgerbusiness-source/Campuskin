@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>CampusKin — Ta promotion, organisée au même endroit</title>
+  <meta name="description" content="Annonces officielles, deadlines de TP, sondages, questions-réponses et notes : CampusKin réunit toute ta promotion dans une appli simple, sécurisée et payable en Mobile Money." />
+  <meta name="theme-color" content="#0F172A" />
+  <meta property="og:title" content="CampusKin — Ta promotion, organisée" />
+  <meta property="og:description" content="L'appli qui réunit annonces, TP, sondages et questions de ta promotion. Paiement Mobile Money." />
+  <meta property="og:type" content="website" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/logo.png" />
+  <link rel="stylesheet" href="/assets/css/base.css" />
+  <link rel="stylesheet" href="/assets/css/landing.css" />
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="/"><img src="/logo.png" alt="" width="32" height="32" />Campus<span>Kin</span></a>
+      <nav class="nav-links" aria-label="Navigation principale">
+        <a href="#avantages">Avantages</a>
+        <a href="#fonctionnement">Comment ça marche</a>
+        <a href="#tarif">Tarif</a>
+        <a href="#faq">Questions</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-ghost btn-sm" href="/connexion" data-cta>Connexion</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <span class="badge">Pour les promotions universitaires</span>
+          <h1>Ta promotion, <em>enfin organisée</em> au même endroit.</h1>
+          <p class="lead">Fini les messages perdus dans dix groupes. Annonces officielles, deadlines de TP, sondages et questions : tout ce que ton délégué publie arrive dans ta poche, même avec une connexion lente.</p>
+          <div class="hero-actions">
+            <a class="btn" href="/connexion?mode=signup">Créer mon compte</a>
+            <a class="btn btn-ghost" href="#tarif">Voir le tarif</a>
+          </div>
+          <p class="hero-note">Paiement par Mobile Money · USD ou CDF · Données cloisonnées par promotion</p>
+        </div>
+        <div class="phone" aria-hidden="true">
+          <h3>Alertes de la promotion</h3>
+          <div class="row urgent"><span>TP Architecture Web</span><strong>Urgent</strong></div>
+          <div class="row"><span>Examen reporté à lundi</span><strong>Annonce</strong></div>
+          <div class="row"><span>Sondage : date de la sortie</span><strong>12 votes</strong></div>
+          <div class="bar"><i></i></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="avantages">
+      <div class="container">
+        <div class="block-title">
+          <h2>Tout ce dont une promotion a besoin</h2>
+          <p>Un outil pensé pour le quotidien des étudiants et de leurs délégués.</p>
+        </div>
+        <div class="features">
+          <article class="card feature"><div class="ico" aria-hidden="true">📢</div><h3>Annonces officielles</h3><p>Le délégué publie, tout le monde est informé. Les messages urgents sont mis en avant.</p></article>
+          <article class="card feature"><div class="ico" aria-hidden="true">⏰</div><h3>Deadlines de TP</h3><p>Chaque TP et chaque date limite au même endroit. Plus personne ne rend en retard sans le savoir.</p></article>
+          <article class="card feature"><div class="ico" aria-hidden="true">🗳️</div><h3>Sondages équitables</h3><p>Un seul vote par étudiant, résultats en direct. Fini les décisions prises à la voix la plus forte.</p></article>
+          <article class="card feature"><div class="ico" aria-hidden="true">❓</div><h3>Questions-réponses</h3><p>Pose ta question à ton délégué, retrouve les réponses sans fouiller un groupe WhatsApp.</p></article>
+          <article class="card feature"><div class="ico" aria-hidden="true">📝</div><h3>Notes hors ligne</h3><p>Prends tes notes même sans internet. Elles restent sur ton téléphone.</p></article>
+          <article class="card feature"><div class="ico" aria-hidden="true">💱</div><h3>Convertisseur CDF / USD</h3><p>Convertis rapidement tes montants, avec un taux que tu règles toi-même.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="fonctionnement">
+      <div class="container">
+        <div class="block-title">
+          <h2>Prêt en trois étapes</h2>
+          <p>Le délégué abonne la promotion, tous les étudiants en profitent.</p>
+        </div>
+        <div class="steps">
+          <div class="card step"><h3>Le délégué s'abonne</h3><p>Il paie l'abonnement de la promotion en Mobile Money, en USD ou en CDF.</p></div>
+          <div class="card step"><h3>Tu rejoins avec un code</h3><p>Ton délégué te donne un code d'invitation. Tu l'entres à l'inscription et tu arrives dans ta promotion.</p></div>
+          <div class="card step"><h3>Tout est au même endroit</h3><p>Annonces, TP, sondages, questions : tu suis ta promotion depuis ton téléphone.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block pricing" id="tarif">
+      <div class="container">
+        <div class="block-title">
+          <h2>Un seul abonnement par promotion</h2>
+          <p>Payé une fois par le délégué, valable pour tous les étudiants.</p>
+        </div>
+        <div class="price-card">
+          <span class="badge">Abonnement promotion</span>
+          <div class="price-row">
+            <div class="price"><strong>$<span id="prix-usd">—</span></strong><span>USD</span></div>
+            <div class="price"><strong><span id="prix-cdf">—</span></strong><span>CDF</span></div>
+          </div>
+          <p class="muted">Valable <strong id="duree">—</strong> jours. Tu choisis la devise au moment de payer.</p>
+          <ul class="price-list">
+            <li>Annonces, TP, sondages et Q&amp;R pour toute la promotion</li>
+            <li>Paiement sécurisé par Mobile Money</li>
+            <li>Données séparées : aucune autre promotion ne voit les tiennes</li>
+            <li>Aucune installation obligatoire : fonctionne comme une appli</li>
+          </ul>
+          <a class="btn btn-block" href="/connexion?mode=signup">Commencer maintenant</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="faq">
+      <div class="container">
+        <div class="block-title"><h2>Questions fréquentes</h2></div>
+        <div class="faq">
+          <details><summary>Mes données sont-elles protégées ?</summary><p>Oui. Chaque promotion est isolée des autres, et un étudiant ne voit jamais ce que fait un autre étudiant. Les paiements sont traités par le prestataire de paiement : nous ne stockons aucun numéro de carte ni code secret.</p></details>
+          <details><summary>Qui paie l'abonnement ?</summary><p>Le délégué de la promotion, une seule fois pour la période. Les étudiants rejoignent gratuitement avec le code d'invitation.</p></details>
+          <details><summary>Je peux payer en dollars ou en francs congolais ?</summary><p>Oui. Le délégué choisit USD ou CDF au moment de payer.</p></details>
+          <details><summary>Ça marche sans internet ?</summary><p>Les notes sont disponibles hors ligne. Les annonces et les sondages se mettent à jour dès que tu retrouves une connexion.</p></details>
+          <details><summary>Comment obtenir mon code d'invitation ?</summary><p>Demande-le à ton délégué. Il le reçoit de l'administrateur de CampusKin quand la promotion est créée.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-final">
+      <div class="container">
+        <h2>Rejoins ta promotion sur CampusKin</h2>
+        <p>Moins de messages perdus, plus de temps pour étudier.</p>
+        <a class="btn" href="/connexion?mode=signup" data-cta>Créer mon compte</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <span>© CampusKin — Kinshasa, RDC</span>
+      <a href="/connexion">Connexion</a>
+    </div>
+  </footer>
+
+  <div class="sticky-cta"><a class="btn" href="/connexion?mode=signup" data-cta>Créer mon compte</a></div>
+
+  <script type="module" src="/assets/js/landing.js"></script>
+</body>
+</html>
