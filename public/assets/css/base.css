@@ -1,0 +1,91 @@
+/* CampusKin — styles communs (charte bleu / blanc) */
+:root {
+  --navy: #0F172A;
+  --brand: #2563EB;
+  --brand-dark: #1D4ED8;
+  --white: #FFFFFF;
+  --bg: #F8FAFF;
+  --line: #DBE4F5;
+  --muted: #64748B;
+  --ok: #059669;
+  --err: #DC2626;
+  --radius: 14px;
+  --shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.25);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  font: 16px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--navy);
+  background: var(--bg);
+  -webkit-tap-highlight-color: transparent;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: var(--brand); }
+h1, h2, h3 { line-height: 1.15; letter-spacing: -0.02em; }
+button, input, select, textarea { font: inherit; color: inherit; }
+
+.container { width: min(1100px, 100% - 2rem); margin-inline: auto; }
+.hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.muted { color: var(--muted); }
+.center { text-align: center; }
+
+/* Boutons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  min-height: 46px; padding: 0.7rem 1.4rem; border: 0; border-radius: 12px;
+  background: var(--brand); color: var(--white); font-weight: 650; font-size: 0.95rem;
+  text-decoration: none; cursor: pointer; transition: transform 0.12s, background 0.2s, box-shadow 0.2s;
+  box-shadow: 0 8px 20px -10px rgba(37, 99, 235, 0.8);
+}
+.btn:hover { background: var(--brand-dark); }
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.55; pointer-events: none; }
+.btn-block { width: 100%; }
+.btn-ghost { background: var(--white); color: var(--brand); border: 1px solid var(--line); box-shadow: none; }
+.btn-ghost:hover { background: #EEF4FF; }
+.btn-danger { background: var(--err); box-shadow: none; }
+.btn-danger:hover { background: #B91C1C; }
+.btn-sm { min-height: 36px; padding: 0.4rem 0.9rem; font-size: 0.85rem; border-radius: 10px; }
+
+/* Formulaires */
+.field { display: grid; gap: 0.35rem; margin-bottom: 1rem; }
+.field label { font-size: 0.8rem; font-weight: 650; color: var(--muted); }
+.input {
+  width: 100%; min-height: 46px; padding: 0.65rem 0.9rem; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--white); outline: none; transition: border 0.15s, box-shadow 0.15s;
+}
+.input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18); }
+textarea.input { min-height: 110px; resize: vertical; }
+
+/* Cartes, badges */
+.card { background: var(--white); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem; box-shadow: var(--shadow); }
+.badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; background: #E0EAFF; color: var(--brand); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.badge-dark { background: var(--navy); color: var(--white); }
+.badge-ok { background: #D1FAE5; color: var(--ok); }
+.badge-err { background: #FEE2E2; color: var(--err); }
+
+/* Retours utilisateur */
+.alert { padding: 0.75rem 1rem; border-radius: 12px; font-size: 0.9rem; margin-bottom: 1rem; }
+.alert-err { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+.alert-ok { background: #ECFDF5; color: #047857; border: 1px solid #A7F3D0; }
+.alert-info { background: #EEF4FF; color: var(--brand-dark); border: 1px solid #C7D8FF; }
+
+.toast {
+  position: fixed; left: 50%; top: calc(var(--safe-top) + 1rem); z-index: 1000; max-width: 92vw;
+  transform: translateX(-50%); padding: 0.75rem 1.2rem; border-radius: 12px; background: var(--navy);
+  color: var(--white); font-size: 0.9rem; box-shadow: var(--shadow); animation: toast-in 0.25s ease-out both;
+}
+.toast.err { background: var(--err); }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+.spinner { width: 28px; height: 28px; margin: 1.5rem auto; border: 3px solid #DBEAFE; border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
