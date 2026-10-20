@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Connexion — CampusKin</title>
+  <meta name="theme-color" content="#0F172A" />
+  <meta name="robots" content="noindex" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="stylesheet" href="/assets/css/base.css" />
+  <link rel="stylesheet" href="/assets/css/auth.css" />
+</head>
+<body class="auth">
+  <main class="auth-box">
+    <div class="auth-logo">
+      <img src="/logo.png" alt="" width="60" height="60" />
+      <h1>Campus<span>Kin</span></h1>
+      <p>Ton espace de promotion</p>
+    </div>
+
+    <div class="card">
+      <div id="message" role="status"></div>
+
+      <div id="bloc-auth">
+        <div class="tabs" role="tablist">
+          <button class="tab" id="tab-login" role="tab" aria-selected="true" type="button">Connexion</button>
+          <button class="tab" id="tab-signup" role="tab" aria-selected="false" type="button">Inscription</button>
+        </div>
+
+        <form id="form-login" novalidate>
+          <div class="field"><label for="l-email">E-mail</label><input class="input" id="l-email" type="email" autocomplete="email" required /></div>
+          <div class="field"><label for="l-pass">Mot de passe</label><input class="input" id="l-pass" type="password" autocomplete="current-password" required /></div>
+          <button class="btn btn-block" id="btn-login" type="submit">Se connecter</button>
+          <button class="link-btn" id="lien-oubli" type="button">Mot de passe oublié ?</button>
+        </form>
+
+        <form id="form-signup" class="hidden" novalidate>
+          <div class="field"><label for="s-nom">Nom complet</label><input class="input" id="s-nom" type="text" autocomplete="name" maxlength="80" required /></div>
+          <div class="field"><label for="s-email">E-mail</label><input class="input" id="s-email" type="email" autocomplete="email" required /></div>
+          <div class="field"><label for="s-pass">Mot de passe (8 caractères minimum)</label><input class="input" id="s-pass" type="password" autocomplete="new-password" minlength="8" required /></div>
+          <div class="field">
+            <label for="s-code">Code d'invitation de ta promotion</label>
+            <input class="input" id="s-code" type="text" autocomplete="off" autocapitalize="characters" maxlength="20" />
+            <span class="hint">Donné par ton délégué. Tu pourras aussi l'entrer plus tard.</span>
+          </div>
+          <button class="btn btn-block" id="btn-signup" type="submit">Créer mon compte</button>
+        </form>
+      </div>
+
+      <form id="form-reset" class="hidden" novalidate>
+        <p class="muted">Entre ton e-mail : nous t'envoyons un lien pour choisir un nouveau mot de passe.</p>
+        <div class="field"><label for="r-email">E-mail</label><input class="input" id="r-email" type="email" autocomplete="email" required /></div>
+        <button class="btn btn-block" id="btn-reset" type="submit">Envoyer le lien</button>
+        <button class="link-btn" id="retour-login" type="button">Retour à la connexion</button>
+      </form>
+
+      <form id="form-newpass" class="hidden" novalidate>
+        <p class="muted">Choisis ton nouveau mot de passe.</p>
+        <div class="field"><label for="n-pass">Nouveau mot de passe (8 caractères minimum)</label><input class="input" id="n-pass" type="password" autocomplete="new-password" minlength="8" required /></div>
+        <button class="btn btn-block" id="btn-newpass" type="submit">Enregistrer</button>
+      </form>
+    </div>
+
+    <a class="auth-back" href="/">← Retour à l'accueil</a>
+  </main>
+
+  <script type="module" src="/assets/js/connexion.js"></script>
+</body>
+</html>
